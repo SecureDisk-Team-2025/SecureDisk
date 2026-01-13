@@ -23,6 +23,7 @@ import {
   DeleteOutlined,
   DownloadOutlined,
   UserAddOutlined,
+  EyeOutlined,
 } from '@ant-design/icons';
 import { AuthContext } from '../contexts/AuthContext';
 import { fileService } from '../services/fileService';
@@ -46,12 +47,40 @@ const Dashboard: React.FC = () => {
   const [pendingRequestsCount, setPendingRequestsCount] = useState(0);
   const [form] = Form.useForm();
   const [joinForm] = Form.useForm();
+  const [previewModalVisible, setPreviewModalVisible] = useState(false);
+  const [previewFile, setPreviewFile] = useState<any>(null);
+  const [previewData, setPreviewData] = useState<any>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [searchKeyword, setSearchKeyword] = useState<string>('');
+  const [searchInput, setSearchInput] = useState<string>('');
 
   // 加载文件列表
   const loadFiles = async () => {
+    // 直接调用带关键字的加载函数
+    loadFilesWithKeyword(searchKeyword);
+  };
+
+  // 处理搜索
+  const handleSearch = () => {
+    // 直接使用searchInput的值进行搜索，避免状态更新的异步问题
+    setSearchKeyword(searchInput);
+    // 直接传递搜索值给loadFiles，而不是依赖searchKeyword状态
+    loadFilesWithKeyword(searchInput);
+  };
+
+  // 清除搜索
+  const handleClearSearch = () => {
+    setSearchInput('');
+    setSearchKeyword('');
+    // 直接传递空字符串进行搜索
+    loadFilesWithKeyword('');
+  };
+
+  // 带关键字的文件加载
+  const loadFilesWithKeyword = async (keyword: string) => {
     setLoading(true);
     try {
-      const fileList = await fileService.getFileList(selectedGroup);
+      const fileList = await fileService.getFileList(selectedGroup, keyword);
       setFiles(fileList || []);
     } catch (error: any) {
       console.error('加载文件列表错误:', error);
@@ -126,6 +155,33 @@ const Dashboard: React.FC = () => {
     } catch (error: any) {
       message.error(error.response?.data?.error || '删除失败');
     }
+  };
+
+  // 文件预览
+  const handlePreview = async (file: any) => {
+    setPreviewFile(file);
+    setPreviewLoading(true);
+    try {
+      // 调用预览服务获取文件内容
+      const data = await fileService.previewFile(file.id, file.original_filename);
+      setPreviewData(data);
+      setPreviewModalVisible(true);
+    } catch (error: any) {
+      message.error(error.response?.data?.error || '预览失败');
+    } finally {
+      setPreviewLoading(false);
+    }
+  };
+
+  // 检查文件是否可预览
+  const isPreviewable = (filename: string) => {
+    const previewableExtensions = [
+      '.jpg', '.jpeg', '.png', '.gif', '.bmp', // 图片
+      '.txt', '.md', '.json', '.xml', '.html', '.css', '.js', '.ts', '.py', '.java', '.c', '.cpp', // 文本文件
+      '.pdf' // PDF文件
+    ];
+    const ext = filename.toLowerCase().substring(filename.lastIndexOf('.'));
+    return previewableExtensions.includes(ext);
   };
 
   // 创建用户组
@@ -237,6 +293,15 @@ const Dashboard: React.FC = () => {
       key: 'action',
       render: (_: any, record: any) => (
         <Space>
+          {isPreviewable(record.original_filename) && (
+            <Button
+              type="link"
+              icon={<EyeOutlined />}
+              onClick={() => handlePreview(record)}
+            >
+              预览
+            </Button>
+          )}
           <Button
             type="link"
             icon={<DownloadOutlined />}
@@ -349,14 +414,25 @@ const Dashboard: React.FC = () => {
               </Space>
             }
             extra={
-              <Upload
-                beforeUpload={handleUpload}
-                showUploadList={false}
-              >
-                <Button type="primary" icon={<UploadOutlined />}>
-                  上传文件
-                </Button>
-              </Upload>
+              <Space>
+                <Input.Search
+                  placeholder="搜索文件名"
+                  value={searchInput}
+                  onChange={(e) => setSearchInput(e.target.value)}
+                  onSearch={handleSearch}
+                  style={{ width: 200 }}
+                  allowClear
+                  onClear={handleClearSearch}
+                />
+                <Upload
+                  beforeUpload={handleUpload}
+                  showUploadList={false}
+                >
+                  <Button type="primary" icon={<UploadOutlined />}>
+                    上传文件
+                  </Button>
+                </Upload>
+              </Space>
             }
           >
             <Table
@@ -535,6 +611,82 @@ const Dashboard: React.FC = () => {
             emptyText: '暂无申请',
           }}
         />
+      </Modal>
+
+      {/* 文件预览模态框 */}
+      <Modal
+        title={`预览文件: ${previewFile?.original_filename}`}
+        open={previewModalVisible}
+        onCancel={() => {
+          setPreviewModalVisible(false);
+          // 清理blob URL，防止内存泄漏
+          if (previewData && previewData.content && previewData.type !== 'text') {
+            window.URL.revokeObjectURL(previewData.content);
+          }
+          setPreviewData(null);
+        }}
+        footer={[
+          <Button key="close" onClick={() => {
+            setPreviewModalVisible(false);
+            // 清理blob URL，防止内存泄漏
+            if (previewData && previewData.content && previewData.type !== 'text') {
+              window.URL.revokeObjectURL(previewData.content);
+            }
+            setPreviewData(null);
+          }}>
+            关闭
+          </Button>,
+        ]}
+        width={800}
+        height={600}
+      >
+        <div style={{ padding: '20px', maxHeight: '500px', overflow: 'auto' }}>
+          {previewLoading ? (
+            <div style={{ textAlign: 'center', padding: '50px' }}>预览加载中...</div>
+          ) : (
+            <div>
+              {previewData ? (
+                <>
+                  {previewData.type === 'image' && (
+                    <img
+                      src={previewData.content}
+                      alt={previewFile?.original_filename}
+                      style={{ maxWidth: '100%', maxHeight: '400px' }}
+                    />
+                  )}
+                  {previewData.type === 'pdf' && (
+                    <div>
+                      <iframe
+                        src={previewData.content}
+                        width="100%"
+                        height="400px"
+                        style={{ border: 'none' }}
+                      />
+                    </div>
+                  )}
+                  {previewData.type === 'text' && (
+                    <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+                      {previewData.content}
+                    </pre>
+                  )}
+                  {previewData.type === 'other' && (
+                    <div style={{ textAlign: 'center', padding: '50px' }}>
+                      <p>无法预览此文件类型</p>
+                      <Button 
+                        type="primary" 
+                        onClick={() => handleDownload(previewFile)}
+                      >
+                        下载文件
+                      </Button>
+                    </div>
+                  )}
+                </>
+              ) : (
+                <div style={{ textAlign: 'center', padding: '50px' }}>预览内容加载失败</div>
+              )}
+            </div>
+          )}
+        </div>
       </Modal>
     </Layout>
   );

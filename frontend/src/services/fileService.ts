@@ -35,8 +35,14 @@ api.interceptors.response.use(
 
 export const fileService = {
   // 获取文件列表
-  async getFileList(groupId?: number) {
-    const params = groupId ? { group_id: groupId } : {};
+  async getFileList(groupId?: number, keyword?: string) {
+    const params: any = {};
+    if (groupId) {
+      params.group_id = groupId;
+    }
+    if (keyword) {
+      params.keyword = keyword;
+    }
     const response = await api.get('/files/list', { params });
     return response.data.files;
   },
@@ -78,5 +84,50 @@ export const fileService = {
   async deleteFile(fileId: number) {
     const response = await api.delete(`/files/${fileId}`);
     return response.data;
+  },
+
+  // 预览文件
+  async previewFile(fileId: number, filename: string) {
+    const response = await api.get(`/files/download/${fileId}`, {
+      params: { preview: true },
+      responseType: 'blob',
+    });
+    
+    // 获取文件扩展名
+    const ext = filename.toLowerCase().substring(filename.lastIndexOf('.'));
+    
+    // 分类文件类型
+    const imageExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.bmp'];
+    const pdfExtensions = ['.pdf'];
+    const textExtensions = ['.txt', '.md', '.json', '.xml', '.html', '.css', '.js', '.ts', '.py', '.java', '.c', '.cpp'];
+    
+    let fileType = 'other';
+    if (imageExtensions.includes(ext)) {
+      fileType = 'image';
+    } else if (pdfExtensions.includes(ext)) {
+      fileType = 'pdf';
+    } else if (textExtensions.includes(ext)) {
+      fileType = 'text';
+    }
+    
+    // 根据文件类型处理内容
+    if (fileType === 'text') {
+      try {
+        const text = await response.data.text();
+        return {
+          type: fileType,
+          content: text
+        };
+      } catch (error) {
+        // 如果无法转换为文本，当作其他类型处理
+        fileType = 'other';
+      }
+    }
+    
+    // 对于图片、PDF和其他类型，返回blob URL
+    return {
+      type: fileType,
+      content: window.URL.createObjectURL(response.data)
+    };
   },
 };

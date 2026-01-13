@@ -35,6 +35,7 @@ def list_files(user):
     """获取文件列表"""
     try:
         group_id = request.args.get('group_id', type=int)
+        keyword = request.args.get('keyword', type=str)
         
         if group_id:
             # 检查用户是否在该组内
@@ -52,6 +53,10 @@ def list_files(user):
         else:
             # 获取用户自己的文件
             query = File.query.filter_by(owner_id=user.id)
+        
+        # 如果有搜索关键字，添加过滤条件
+        if keyword:
+            query = query.filter(File.original_filename.like(f'%{keyword}%'))
         
         files = query.order_by(File.created_at.desc()).all()
         
@@ -166,21 +171,24 @@ def download_file(user, file_id):
         temp_path = file_record.file_path.replace('.enc', '.tmp')
         AESEncryption.decrypt_file(file_record.file_path, file_key, temp_path)
         
+        # 检查是否是预览请求
+        is_preview = request.args.get('preview', 'false').lower() == 'true'
+        
+        # 根据文件类型设置Content-Type
+        import mimetypes
+        content_type, _ = mimetypes.guess_type(file_record.original_filename)
+        if not content_type:
+            content_type = 'application/octet-stream'
+        
         # 返回文件
         response = send_file(
             temp_path,
-            as_attachment=True,
-            download_name=file_record.original_filename
+            as_attachment=not is_preview,
+            download_name=file_record.original_filename,
+            mimetype=content_type
         )
         
         # 清理临时文件
-        def remove_file(response):
-            try:
-                os.remove(temp_path)
-            except:
-                pass
-            return response
-        
         response.call_on_close(lambda: os.remove(temp_path) if os.path.exists(temp_path) else None)
         
         return response
