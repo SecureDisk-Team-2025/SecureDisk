@@ -18,7 +18,7 @@ class User(db.Model):
     password_hash = db.Column(db.String(255), nullable=False)
     encrypted_master_key = db.Column(db.Text, nullable=False)  # 加密的主密钥
     recovery_package = db.Column(db.Text, nullable=True)  # 密钥恢复包
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=datetime.now)
     last_login = db.Column(db.DateTime, nullable=True)
     
     # 关系
@@ -43,7 +43,7 @@ class UserGroup(db.Model):
     name = db.Column(db.String(100), nullable=False)
     description = db.Column(db.Text, nullable=True)
     created_by = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=datetime.now)
     
     # 关系
     members = db.relationship('GroupMember', backref='group', lazy=True, cascade='all, delete-orphan')
@@ -65,7 +65,7 @@ class GroupMember(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
     group_id = db.Column(db.Integer, db.ForeignKey('user_groups.id'), nullable=False)
-    joined_at = db.Column(db.DateTime, default=datetime.utcnow)
+    joined_at = db.Column(db.DateTime, default=datetime.now)
     role = db.Column(db.String(20), default='member')  # owner, admin, member
     
     __table_args__ = (db.UniqueConstraint('user_id', 'group_id', name='unique_user_group'),)
@@ -79,6 +79,29 @@ class GroupMember(db.Model):
             'joined_at': self.joined_at.isoformat() if self.joined_at else None
         }
 
+class GroupJoinRequest(db.Model):
+    """用户组加入申请"""
+    __tablename__ = 'group_join_requests'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    group_id = db.Column(db.Integer, db.ForeignKey('user_groups.id'), nullable=False)
+    status = db.Column(db.String(20), default='pending')  # pending, approved, rejected
+    message = db.Column(db.Text, nullable=True)  # 申请信息
+    created_at = db.Column(db.DateTime, default=datetime.now)
+    
+    __table_args__ = (db.UniqueConstraint('user_id', 'group_id', name='unique_user_group_request'),)
+    
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'user_id': self.user_id,
+            'group_id': self.group_id,
+            'status': self.status,
+            'message': self.message,
+            'created_at': self.created_at.isoformat() if self.created_at else None
+        }
+
 class GroupSharedKey(db.Model):
     """用户组共享密钥"""
     __tablename__ = 'group_shared_keys'
@@ -87,7 +110,7 @@ class GroupSharedKey(db.Model):
     group_id = db.Column(db.Integer, db.ForeignKey('user_groups.id'), nullable=False)
     encrypted_key = db.Column(db.Text, nullable=False)  # 使用接收用户的公钥加密的密钥
     shared_by = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
-    shared_at = db.Column(db.DateTime, default=datetime.utcnow)
+    shared_at = db.Column(db.DateTime, default=datetime.now)
     
     def to_dict(self):
         return {
@@ -110,8 +133,8 @@ class File(db.Model):
     owner_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
     group_id = db.Column(db.Integer, db.ForeignKey('user_groups.id'), nullable=True)
     mime_type = db.Column(db.String(100), nullable=True)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=datetime.now)
+    updated_at = db.Column(db.DateTime, default=datetime.now, onupdate=datetime.now)
     
     def to_dict(self):
         return {
@@ -134,9 +157,9 @@ class Session(db.Model):
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
     session_token = db.Column(db.String(255), unique=True, nullable=False, index=True)
     encrypted_session_key = db.Column(db.Text, nullable=False)  # RSA加密的会话密钥
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=datetime.now)
     expires_at = db.Column(db.DateTime, nullable=False)
-    last_activity = db.Column(db.DateTime, default=datetime.utcnow)
+    last_activity = db.Column(db.DateTime, default=datetime.now)
     
     def to_dict(self):
         return {
@@ -155,6 +178,6 @@ class EmailCode(db.Model):
     email = db.Column(db.String(120), nullable=False, index=True)
     code = db.Column(db.String(10), nullable=False)
     purpose = db.Column(db.String(20), nullable=False)  # login, recover
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=datetime.now)
     expires_at = db.Column(db.DateTime, nullable=False)
     used = db.Column(db.Boolean, default=False)

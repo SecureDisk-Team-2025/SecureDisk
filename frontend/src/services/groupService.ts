@@ -45,17 +45,36 @@ export const groupService = {
     return response.data.group;
   },
 
-  // 加入用户组
-  async joinGroup(groupId: number) {
+  // 加入用户组（创建申请）
+  async joinGroup(groupId: number, message?: string) {
     const response = await api.post('/groups/join', {
       group_id: groupId,
+      message: message,
     });
-    return response.data.group;
+    return response.data;
   },
 
   // 获取组成员
   async getGroupMembers(groupId: number) {
     const response = await api.get(`/groups/${groupId}/members`);
     return response.data.members;
+  },
+
+  // 获取用户组的加入申请
+  async getGroupRequests() {
+    const response = await api.get('/groups/requests');
+    return response.data.requests;
+  },
+
+  // 批准加入申请
+  async approveJoinRequest(requestId: number) {
+    const response = await api.post(`/groups/requests/${requestId}/approve`);
+    return response.data;
+  },
+
+  // 拒绝加入申请
+  async rejectJoinRequest(requestId: number) {
+    const response = await api.post(`/groups/requests/${requestId}/reject`);
+    return response.data;
   },
 };

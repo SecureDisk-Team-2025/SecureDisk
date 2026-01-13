@@ -40,6 +40,10 @@ const Dashboard: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [groupModalVisible, setGroupModalVisible] = useState(false);
   const [joinGroupModalVisible, setJoinGroupModalVisible] = useState(false);
+  const [requestsModalVisible, setRequestsModalVisible] = useState(false);
+  const [requests, setRequests] = useState<any[]>([]);
+  const [requestsLoading, setRequestsLoading] = useState(false);
+  const [pendingRequestsCount, setPendingRequestsCount] = useState(0);
   const [form] = Form.useForm();
   const [joinForm] = Form.useForm();
 
@@ -78,7 +82,14 @@ const Dashboard: React.FC = () => {
   useEffect(() => {
     loadFiles();
     loadGroups();
+    loadPendingRequestsCount();
   }, [selectedGroup]);
+
+  // 每30秒自动更新未处理申请数量
+  useEffect(() => {
+    const interval = setInterval(loadPendingRequestsCount, 30000);
+    return () => clearInterval(interval);
+  }, []);
 
   // 文件上传
   const handleUpload = async (file: File) => {
@@ -134,13 +145,67 @@ const Dashboard: React.FC = () => {
   const handleJoinGroup = async (values: any) => {
     try {
       const groupId = parseInt(values.groupId);
-      await groupService.joinGroup(groupId);
-      message.success('加入成功');
+      const result = await groupService.joinGroup(groupId, values.message);
+      message.success(result.message || '申请已提交');
       setJoinGroupModalVisible(false);
       joinForm.resetFields();
       loadGroups();
     } catch (error: any) {
       message.error(error.response?.data?.error || '加入失败');
+    }
+  };
+
+  // 加载申请列表
+  const loadRequests = async () => {
+    setRequestsLoading(true);
+    try {
+      const requestList = await groupService.getGroupRequests();
+      setRequests(requestList || []);
+      setPendingRequestsCount(requestList?.length || 0);
+    } catch (error: any) {
+      console.error('加载申请列表错误:', error);
+      const errorMsg = error.response?.data?.error || error.message || '加载申请列表失败';
+      message.error(errorMsg);
+      setRequests([]);
+      setPendingRequestsCount(0);
+    } finally {
+      setRequestsLoading(false);
+    }
+  };
+
+  // 加载未处理申请数量
+  const loadPendingRequestsCount = async () => {
+    try {
+      const requestList = await groupService.getGroupRequests();
+      setPendingRequestsCount(requestList?.length || 0);
+    } catch (error) {
+      console.error('加载未处理申请数量错误:', error);
+      setPendingRequestsCount(0);
+    }
+  };
+
+  // 批准申请
+  const handleApproveRequest = async (requestId: number) => {
+    try {
+      await groupService.approveJoinRequest(requestId);
+      message.success('批准成功');
+      loadRequests();
+      loadGroups();
+      loadPendingRequestsCount();
+    } catch (error: any) {
+      message.error(error.response?.data?.error || '批准失败');
+    }
+  };
+
+  // 拒绝申请
+  const handleRejectRequest = async (requestId: number) => {
+    try {
+      await groupService.rejectJoinRequest(requestId);
+      message.success('拒绝成功');
+      loadRequests();
+      loadPendingRequestsCount();
+    } catch (error: any) {
+      message.error(error.response?.data?.error || '拒绝失败');
     }
   };
 
@@ -245,6 +310,32 @@ const Dashboard: React.FC = () => {
                 onClick={() => setJoinGroupModalVisible(true)}
               >
                 加入用户组
+              </Menu.Item>
+              <Menu.Item
+                key="manage-requests"
+                icon={<TeamOutlined />}
+                onClick={() => {
+                  loadRequests();
+                  setRequestsModalVisible(true);
+                }}
+              >
+                <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
+                  管理加入申请
+                  {pendingRequestsCount > 0 && (
+                    <span style={{
+                      backgroundColor: '#ff4d4f',
+                      color: 'white',
+                      borderRadius: '10px',
+                      padding: '0 8px',
+                      fontSize: '12px',
+                      fontWeight: 'bold',
+                      minWidth: '20px',
+                      textAlign: 'center'
+                    }}>
+                      {pendingRequestsCount}
+                    </span>
+                  )}
+                </span>
               </Menu.Item>
             </Menu.ItemGroup>
           </Menu>
@@ -351,6 +442,15 @@ const Dashboard: React.FC = () => {
           >
             <Input placeholder="请输入用户组 ID" />
           </Form.Item>
+          <Form.Item
+            name="message"
+            label="申请信息"
+            rules={[
+              { max: 500, message: '申请信息不能超过500个字符' }
+            ]}
+          >
+            <TextArea rows={3} placeholder="请输入申请加入的理由（可选）" />
+          </Form.Item>
           <Form.Item>
             <Space>
               <Button type="primary" htmlType="submit">
@@ -365,6 +465,76 @@ const Dashboard: React.FC = () => {
             </Space>
           </Form.Item>
         </Form>
+      </Modal>
+
+      {/* 管理加入申请模态框 */}
+      <Modal
+        title="管理加入申请"
+        open={requestsModalVisible}
+        onCancel={() => setRequestsModalVisible(false)}
+        footer={null}
+        width={800}
+      >
+        <Table
+          columns={[
+            {
+              title: '申请人',
+              dataIndex: 'user',
+              key: 'user',
+              render: (user: any) => user?.username || '未知用户',
+            },
+            {
+              title: '申请加入的群组',
+              dataIndex: 'group',
+              key: 'group',
+              render: (group: any) => group?.name || '未知群组',
+            },
+            {
+              title: '申请信息',
+              dataIndex: 'message',
+              key: 'message',
+              render: (message: string) => message || '无',
+            },
+            {
+              title: '申请时间',
+              dataIndex: 'created_at',
+              key: 'created_at',
+              render: (time: string) => new Date(time).toLocaleString('zh-CN'),
+            },
+            {
+              title: '操作',
+              key: 'action',
+              render: (_: any, record: any) => (
+                <Space>
+                  <Button
+                    type="primary"
+                    size="small"
+                    onClick={() => handleApproveRequest(record.id)}
+                  >
+                    批准
+                  </Button>
+                  <Button
+                    danger
+                    size="small"
+                    onClick={() => handleRejectRequest(record.id)}
+                  >
+                    拒绝
+                  </Button>
+                </Space>
+              ),
+            },
+          ]}
+          dataSource={requests}
+          loading={requestsLoading}
+          rowKey="id"
+          pagination={{
+            pageSize: 10,
+            showTotal: (total) => `共 ${total} 个申请`,
+          }}
+          locale={{
+            emptyText: '暂无申请',
+          }}
+        />
       </Modal>
     </Layout>
   );

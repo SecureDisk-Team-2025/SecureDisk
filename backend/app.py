@@ -32,7 +32,7 @@ CORS(app,
      methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"])
 
 # 导入模型（必须在db初始化后）
-from models import User, File, UserGroup, GroupMember, Session, EmailCode
+from models import User, File, UserGroup, GroupMember, GroupJoinRequest, Session, EmailCode
 
 # 导入API路由
 from api.auth import auth_bp
