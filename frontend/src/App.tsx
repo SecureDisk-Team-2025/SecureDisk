@@ -1,4 +1,7 @@
+<<<<<<< HEAD
 // src/App.tsx
+=======
+>>>>>>> 46349feb07a9b5298ab241eeb463bd0577bbc3ce
 import React, { useState, useEffect } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { Layout, message } from 'antd';
@@ -11,6 +14,7 @@ import './App.css';
 const { Content } = Layout;
 
 function App() {
+<<<<<<< HEAD
   // 用户状态：null 表示未登录，有对象表示已登录
   const [user, setUser] = useState<any>(null);
   const [loading, setLoading] = useState(true);
@@ -79,6 +83,62 @@ function App() {
               />
               {/* 捕获其他所有路径，重定向 */}
               <Route path="*" element={<Navigate to="/" replace />} />
+=======
+  const [user, setUser] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    // 检查是否有保存的会话
+    const sessionToken = localStorage.getItem('session_token');
+    if (sessionToken) {
+      authService.getCurrentUser()
+        .then((userData) => {
+          setUser(userData);
+        })
+        .catch(() => {
+          localStorage.removeItem('session_token');
+        })
+        .finally(() => {
+          setLoading(false);
+        });
+    } else {
+      setLoading(false);
+    }
+  }, []);
+
+  const login = (userData: any, token: string) => {
+    setUser(userData);
+    localStorage.setItem('session_token', token);
+    message.success('登录成功');
+  };
+
+  const logout = () => {
+    authService.logout().finally(() => {
+      setUser(null);
+      localStorage.removeItem('session_token');
+      message.success('已登出');
+    });
+  };
+
+  if (loading) {
+    return <div>加载中...</div>;
+  }
+
+  return (
+    <AuthContext.Provider value={{ user, login, logout }}>
+      <Router>
+        <Layout className="app-layout">
+          <Content>
+            <Routes>
+              <Route
+                path="/login"
+                element={user ? <Navigate to="/" /> : <Login />}
+              />
+              <Route
+                path="/"
+                element={user ? <Dashboard /> : <Navigate to="/login" />}
+              />
+>>>>>>> 46349feb07a9b5298ab241eeb463bd0577bbc3ce
             </Routes>
           </Content>
         </Layout>
@@ -87,4 +147,8 @@ function App() {
   );
 }
 
+<<<<<<< HEAD
 export default App;
+=======
+export default App;
+>>>>>>> 46349feb07a9b5298ab241eeb463bd0577bbc3ce
