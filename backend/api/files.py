@@ -11,6 +11,7 @@ from datetime import datetime
 import os
 import base64
 import json
+import io
 
 files_bp = Blueprint('files', __name__)
 
@@ -87,22 +88,17 @@ def upload_file(user):
         # 生成文件密钥
         file_key = KeyManager.generate_file_key()
         
-        # 加密文件
+        # 直接在 uploads 目录下生成加密文件名
         from flask import current_app
         upload_folder = current_app.config.get('UPLOAD_FOLDER', 'uploads')
         filename = file.filename
-        file_path = os.path.join(upload_folder, f'{user.id}_{datetime.now().timestamp()}_{filename}')
+        filename_on_disk = f'{user.id}_{datetime.now().timestamp()}_{filename}.enc'
+        encrypted_path = os.path.join(upload_folder, filename_on_disk)
         os.makedirs(upload_folder, exist_ok=True)
         
-        # 保存原始文件
-        file.save(file_path)
-        
-        # 加密文件
-        encrypted_path = file_path + '.enc'
-        AESEncryption.encrypt_file(file_path, file_key, encrypted_path)
-        
-        # 删除原始文件
-        os.remove(file_path)
+        # 直接加密上传的文件流，避免在服务器磁盘留下未加密的临时文件
+        file_data = file.read()
+        AESEncryption.encrypt_data_to_file(file_data, file_key, encrypted_path)
         
         # 获取主密钥（需要客户端提供密码解密）
         # 这里简化处理，实际应该从客户端获取解密后的主密钥
@@ -167,9 +163,8 @@ def download_file(user, file_id):
         encrypted_file_key_data = json.loads(file_record.encrypted_file_key)
         file_key = base64.b64decode(encrypted_file_key_data['encrypted'])
         
-        # 解密文件到临时位置
-        temp_path = file_record.file_path.replace('.enc', '.tmp')
-        AESEncryption.decrypt_file(file_record.file_path, file_key, temp_path)
+        # 解密文件到内存，避免在服务器磁盘留下未加密的临时文件
+        plaintext = AESEncryption.decrypt_file_to_memory(file_record.file_path, file_key)
         
         # 检查是否是预览请求
         is_preview = request.args.get('preview', 'false').lower() == 'true'
@@ -180,18 +175,13 @@ def download_file(user, file_id):
         if not content_type:
             content_type = 'application/octet-stream'
         
-        # 返回文件
-        response = send_file(
-            temp_path,
+        # 使用 BytesIO 将内存中的明文发送给客户端
+        return send_file(
+            io.BytesIO(plaintext),
             as_attachment=not is_preview,
             download_name=file_record.original_filename,
             mimetype=content_type
         )
-        
-        # 清理临时文件
-        response.call_on_close(lambda: os.remove(temp_path) if os.path.exists(temp_path) else None)
-        
-        return response
     
     except Exception as e:
         return jsonify({'error': str(e)}), 500

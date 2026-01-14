@@ -101,12 +101,27 @@ class AESEncryption:
         Returns:
             str: 加密后的文件路径
         """
-        if output_path is None:
-            output_path = file_path + '.enc'
-        
         with open(file_path, 'rb') as f:
             data = f.read()
         
+        if output_path is None:
+            output_path = file_path + '.enc'
+            
+        return AESEncryption.encrypt_data_to_file(data, key, output_path)
+
+    @staticmethod
+    def encrypt_data_to_file(data: bytes, key: bytes, output_path: str):
+        """
+        加密数据并保存到文件
+        
+        Args:
+            data: 要加密的数据 bytes
+            key: AES密钥
+            output_path: 输出文件路径
+        
+        Returns:
+            str: 加密后的文件路径
+        """
         encrypted = AESEncryption.encrypt(data, key)
         
         # 将加密数据写入文件
@@ -130,9 +145,28 @@ class AESEncryption:
         Returns:
             str: 解密后的文件路径
         """
+        plaintext = AESEncryption.decrypt_file_to_memory(encrypted_path, key)
+        
         if output_path is None:
             output_path = encrypted_path.replace('.enc', '')
+            
+        with open(output_path, 'wb') as f:
+            f.write(plaintext)
         
+        return output_path
+
+    @staticmethod
+    def decrypt_file_to_memory(encrypted_path: str, key: bytes) -> bytes:
+        """
+        解密文件到内存
+        
+        Args:
+            encrypted_path: 加密文件路径
+            key: AES密钥
+        
+        Returns:
+            bytes: 解密后的原始数据
+        """
         with open(encrypted_path, 'rb') as f:
             content = f.read()
         
@@ -149,9 +183,4 @@ class AESEncryption:
             'nonce': nonce_b64
         }
         
-        plaintext = AESEncryption.decrypt(encrypted_data, key)
-        
-        with open(output_path, 'wb') as f:
-            f.write(plaintext)
-        
-        return output_path
+        return AESEncryption.decrypt(encrypted_data, key)
