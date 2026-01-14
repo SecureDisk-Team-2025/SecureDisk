@@ -1,12 +1,7 @@
-<<<<<<< HEAD
 // src/services/authService.ts
 import axios from 'axios';
 // 假设你项目里有这个加密工具文件，如果没有会报错，需确认
 import { RSAEncryption } from '../utils/crypto'; 
-=======
-import axios from 'axios';
-import { RSAEncryption } from '../utils/crypto';
->>>>>>> 46349feb07a9b5298ab241eeb463bd0577bbc3ce
 
 const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000/api';
 
@@ -33,7 +28,6 @@ api.interceptors.response.use(
   (response) => response,
   (error) => {
     if (error.response?.status === 401) {
-<<<<<<< HEAD
       // Token 过期或未登录
       localStorage.removeItem('session_token');
       // 避免无限循环刷新，只有不在登录页时才跳转
@@ -43,20 +37,11 @@ api.interceptors.response.use(
     } else if (error.message === 'Network Error' || error.code === 'ERR_NETWORK') {
       console.error('网络错误：无法连接到后端服务器');
       console.error('请确保后端服务器正在运行在 http://localhost:5000');
-=======
-      localStorage.removeItem('session_token');
-      window.location.href = '/login';
-    } else if (error.message === 'Network Error' || error.code === 'ERR_NETWORK') {
-      console.error('网络错误：无法连接到后端服务器');
-      console.error('请确保后端服务器正在运行在 http://localhost:5000');
-      console.error('启动后端：cd backend && python app.py');
->>>>>>> 46349feb07a9b5298ab241eeb463bd0577bbc3ce
     }
     return Promise.reject(error);
   }
 );
 
-<<<<<<< HEAD
 // 生成RSA密钥对（客户端）缓存
 let clientKeyPairPromise: Promise<{ privateKey: string; publicKey: string }> | null = null;
 
@@ -71,35 +56,18 @@ export const authService = {
         console.warn("RSA密钥生成失败，可能是工具类缺失，使用模拟密钥");
         return { privateKey: "mock_priv", publicKey: "mock_pub" };
       }
-=======
-// 生成RSA密钥对（客户端）
-let clientKeyPairPromise: Promise<{ privateKey: string; publicKey: string }> | null = null;
-
-export const authService = {
-  // 生成客户端密钥对
-  async generateKeyPair() {
-    if (!clientKeyPairPromise) {
-      clientKeyPairPromise = RSAEncryption.generateKeyPair();
->>>>>>> 46349feb07a9b5298ab241eeb463bd0577bbc3ce
     }
     return await clientKeyPairPromise;
   },
 
-<<<<<<< HEAD
   // 1. 注册 (保持不变)
-=======
-  // 注册
->>>>>>> 46349feb07a9b5298ab241eeb463bd0577bbc3ce
   async register(username: string, email: string, password: string) {
     const keyPair = await this.generateKeyPair();
     const response = await api.post('/auth/register', {
       username,
       email,
       password,
-<<<<<<< HEAD
       public_key: keyPair.publicKey, // 发送公钥给后端
-=======
->>>>>>> 46349feb07a9b5298ab241eeb463bd0577bbc3ce
     });
     
     // 保存公钥和恢复码
@@ -112,59 +80,36 @@ export const authService = {
     return response.data;
   },
 
-<<<<<<< HEAD
   // 2. 发送邮箱验证码 (⚠️ 修改了 URL 以匹配 app.py)
   async sendEmailCode(email: string, purpose: string = 'login') {
     // 后端路由是 /api/auth/send-email-code
     const response = await api.post('/auth/send-email-code', {
       email,
       purpose, // 虽然简单版后端没用到 purpose，但传过去无妨
-=======
-  // 发送邮箱验证码
-  async sendEmailCode(email: string, purpose: string = 'login') {
-    const response = await api.post('/auth/email-code', {
-      email,
-      purpose,
->>>>>>> 46349feb07a9b5298ab241eeb463bd0577bbc3ce
     });
     return response.data;
   },
 
-<<<<<<< HEAD
   // 3. 登录（密码方式）(保持不变)
   async loginWithPassword(username: string, password: string) {
     const keyPair = await this.generateKeyPair();
     const response = await api.post('/auth/login', {
       type: 'password', // 后端可能需要根据这个区分
-=======
-  // 登录（密码方式）
-  async loginWithPassword(username: string, password: string) {
-    const keyPair = await this.generateKeyPair();
-    const response = await api.post('/auth/login', {
-      type: 'password',
->>>>>>> 46349feb07a9b5298ab241eeb463bd0577bbc3ce
       username,
       password,
       public_key: keyPair.publicKey,
     });
     
-<<<<<<< HEAD
     if (response.data.status === 'success' || response.data.token) {
         localStorage.setItem('client_private_key', keyPair.privateKey);
         // 注意：后端返回的字段可能是 token 或 session_token，这里做个兼容
         const token = response.data.session_token || response.data.token;
         localStorage.setItem('session_token', token);
     }
-=======
-    // 保存私钥和会话token
-    localStorage.setItem('client_private_key', keyPair.privateKey);
-    localStorage.setItem('session_token', response.data.session_token);
->>>>>>> 46349feb07a9b5298ab241eeb463bd0577bbc3ce
     
     return response.data;
   },
 
-<<<<<<< HEAD
   // 4. 登录（邮箱验证码方式）(⚠️ 修改了 URL 和 参数结构)
   async loginWithEmail(email: string, code: string) {
     const keyPair = await this.generateKeyPair();
@@ -182,29 +127,11 @@ export const authService = {
         const token = response.data.session_token || response.data.token;
         localStorage.setItem('session_token', token);
     }
-=======
-  // 登录（邮箱验证码方式）
-  async loginWithEmail(email: string, code: string) {
-    const keyPair = await this.generateKeyPair();
-    const response = await api.post('/auth/login', {
-      type: 'email',
-      email,
-      code,
-      public_key: keyPair.publicKey,
-    });
-    
-    localStorage.setItem('client_private_key', keyPair.privateKey);
-    localStorage.setItem('session_token', response.data.session_token);
->>>>>>> 46349feb07a9b5298ab241eeb463bd0577bbc3ce
     
     return response.data;
   },
 
-<<<<<<< HEAD
   // 5. 密钥找回 (保持不变)
-=======
-  // 密钥找回
->>>>>>> 46349feb07a9b5298ab241eeb463bd0577bbc3ce
   async recoverKey(email: string, code: string) {
     const response = await api.post('/auth/recover-key', {
       email,
@@ -213,7 +140,6 @@ export const authService = {
     return response.data;
   },
 
-<<<<<<< HEAD
   // 6. 获取当前用户信息
   async getCurrentUser() {
     // 假设后端还没写 /me 接口，为了防止前端报错白屏，这里加个 try-catch
@@ -240,16 +166,3 @@ export const authService = {
     localStorage.removeItem('client_private_key');
   },
 };
-=======
-  // 获取当前用户信息
-  async getCurrentUser() {
-    const response = await api.get('/auth/me');
-    return response.data.user;
-  },
-
-  // 登出
-  async logout() {
-    await api.post('/auth/logout');
-  },
-};
->>>>>>> 46349feb07a9b5298ab241eeb463bd0577bbc3ce
