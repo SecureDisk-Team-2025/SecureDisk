@@ -2,7 +2,7 @@
 用户组管理API接口
 """
 from flask import Blueprint, request, jsonify
-from models import UserGroup, GroupMember, GroupSharedKey, User, db
+from models import UserGroup, GroupMember, GroupSharedKey, GroupJoinRequest, User, db
 from api.auth import require_auth
 from datetime import datetime
 
@@ -78,10 +78,11 @@ def create_group(user):
 @groups_bp.route('/join', methods=['POST'])
 @require_auth
 def join_group(user):
-    """加入用户组"""
+    """申请加入用户组"""
     try:
         data = request.get_json()
         group_id = data.get('group_id')
+        message = data.get('message', '')
         
         if not group_id:
             return jsonify({'error': '缺少组ID'}), 400
@@ -89,28 +90,160 @@ def join_group(user):
         group = UserGroup.query.get_or_404(group_id)
         
         # 检查是否已经是成员
-        existing = GroupMember.query.filter_by(
+        existing_member = GroupMember.query.filter_by(
             user_id=user.id,
             group_id=group_id
         ).first()
         
-        if existing:
+        if existing_member:
             return jsonify({'error': '已经是该组成员'}), 400
         
-        # 添加成员
-        member = GroupMember(
+        # 检查是否已经有未处理的申请
+        existing_pending = GroupJoinRequest.query.filter_by(
             user_id=user.id,
             group_id=group_id,
+            status='pending'
+        ).first()
+        
+        if existing_pending:
+            return jsonify({'error': '已经提交过申请，请等待审批'}), 400
+        
+        # 检查是否有被拒绝的申请
+        existing_rejected = GroupJoinRequest.query.filter_by(
+            user_id=user.id,
+            group_id=group_id,
+            status='rejected'
+        ).first()
+        
+        if existing_rejected:
+            # 删除旧的被拒绝申请
+            db.session.delete(existing_rejected)
+            db.session.commit()
+        
+        # 创建新的加入申请
+        join_request = GroupJoinRequest(
+            user_id=user.id,
+            group_id=group_id,
+            status='pending',
+            message=message
+        )
+        
+        db.session.add(join_request)
+        db.session.commit()
+        
+        return jsonify({
+            'message': '申请已提交，请等待管理员审批',
+            'request_id': join_request.id
+        }), 200
+    
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@groups_bp.route('/requests', methods=['GET'])
+@require_auth
+def get_group_requests(user):
+    """获取用户组的加入申请（仅组管理员和创建者可查看）"""
+    try:
+        # 获取用户管理的所有组
+        managed_groups = GroupMember.query.filter(
+            GroupMember.user_id == user.id,
+            GroupMember.role.in_(['owner', 'admin'])
+        ).all()
+        
+        group_ids = [m.group_id for m in managed_groups]
+        
+        if not group_ids:
+            return jsonify({'requests': []}), 200
+        
+        # 获取这些组的所有未处理申请
+        requests = GroupJoinRequest.query.filter(
+            GroupJoinRequest.group_id.in_(group_ids),
+            GroupJoinRequest.status == 'pending'
+        ).all()
+        
+        # 获取请求用户的信息
+        request_data = []
+        for req in requests:
+            req_dict = req.to_dict()
+            req_user = User.query.get(req.user_id)
+            if req_user:
+                req_dict['user'] = req_user.to_dict()
+            req_group = UserGroup.query.get(req.group_id)
+            if req_group:
+                req_dict['group'] = req_group.to_dict()
+            request_data.append(req_dict)
+        
+        return jsonify({'requests': request_data}), 200
+    
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@groups_bp.route('/requests/<int:request_id>/approve', methods=['POST'])
+@require_auth
+def approve_join_request(user, request_id):
+    """批准加入申请"""
+    try:
+        # 获取申请
+        join_request = GroupJoinRequest.query.get_or_404(request_id)
+        
+        # 检查用户是否有权限审批（组管理员或创建者）
+        membership = GroupMember.query.filter(
+            GroupMember.user_id == user.id,
+            GroupMember.group_id == join_request.group_id,
+            GroupMember.role.in_(['owner', 'admin'])
+        ).first()
+        
+        if not membership:
+            return jsonify({'error': '没有权限审批此申请'}), 403
+        
+        # 检查申请状态
+        if join_request.status != 'pending':
+            return jsonify({'error': '申请已经处理过'}), 400
+        
+        # 更新申请状态
+        join_request.status = 'approved'
+        
+        # 添加用户为组成员
+        member = GroupMember(
+            user_id=join_request.user_id,
+            group_id=join_request.group_id,
             role='member'
         )
         
         db.session.add(member)
         db.session.commit()
         
-        return jsonify({
-            'message': '加入成功',
-            'group': group.to_dict()
-        }), 200
+        return jsonify({'message': '批准成功'}), 200
+    
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@groups_bp.route('/requests/<int:request_id>/reject', methods=['POST'])
+@require_auth
+def reject_join_request(user, request_id):
+    """拒绝加入申请"""
+    try:
+        # 获取申请
+        join_request = GroupJoinRequest.query.get_or_404(request_id)
+        
+        # 检查用户是否有权限审批（组管理员或创建者）
+        membership = GroupMember.query.filter_by(
+            user_id=user.id,
+            group_id=join_request.group_id
+        ).first()
+        
+        if not membership or membership.role not in ['owner', 'admin']:
+            return jsonify({'error': '没有权限审批此申请'}), 403
+        
+        # 检查申请状态
+        if join_request.status != 'pending':
+            return jsonify({'error': '申请已经处理过'}), 400
+        
+        # 更新申请状态
+        join_request.status = 'rejected'
+        db.session.commit()
+        
+        return jsonify({'message': '拒绝成功'}), 200
     
     except Exception as e:
         return jsonify({'error': str(e)}), 500

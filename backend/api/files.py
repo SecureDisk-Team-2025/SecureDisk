@@ -35,10 +35,28 @@ def list_files(user):
     """获取文件列表"""
     try:
         group_id = request.args.get('group_id', type=int)
+        keyword = request.args.get('keyword', type=str)
         
-        query = File.query.filter_by(owner_id=user.id)
         if group_id:
-            query = query.filter_by(group_id=group_id)
+            # 检查用户是否在该组内
+            from models import GroupMember
+            membership = GroupMember.query.filter_by(
+                user_id=user.id,
+                group_id=group_id
+            ).first()
+            
+            if not membership:
+                return jsonify({'error': '不是该组成员'}), 403
+            
+            # 获取组内所有文件
+            query = File.query.filter_by(group_id=group_id)
+        else:
+            # 获取用户自己的文件
+            query = File.query.filter_by(owner_id=user.id)
+        
+        # 如果有搜索关键字，添加过滤条件
+        if keyword:
+            query = query.filter(File.original_filename.like(f'%{keyword}%'))
         
         files = query.order_by(File.created_at.desc()).all()
         
@@ -132,7 +150,18 @@ def download_file(user, file_id):
         
         # 检查权限
         if file_record.owner_id != user.id:
-            return jsonify({'error': '无权访问此文件'}), 403
+            # 如果不是文件所有者，检查是否是同一个用户组的成员
+            if file_record.group_id:
+                from models import GroupMember
+                membership = GroupMember.query.filter_by(
+                    user_id=user.id,
+                    group_id=file_record.group_id
+                ).first()
+                
+                if not membership:
+                    return jsonify({'error': '无权访问此文件'}), 403
+            else:
+                return jsonify({'error': '无权访问此文件'}), 403
         
         # 获取文件密钥（需要客户端提供主密钥解密）
         encrypted_file_key_data = json.loads(file_record.encrypted_file_key)
@@ -142,21 +171,24 @@ def download_file(user, file_id):
         temp_path = file_record.file_path.replace('.enc', '.tmp')
         AESEncryption.decrypt_file(file_record.file_path, file_key, temp_path)
         
+        # 检查是否是预览请求
+        is_preview = request.args.get('preview', 'false').lower() == 'true'
+        
+        # 根据文件类型设置Content-Type
+        import mimetypes
+        content_type, _ = mimetypes.guess_type(file_record.original_filename)
+        if not content_type:
+            content_type = 'application/octet-stream'
+        
         # 返回文件
         response = send_file(
             temp_path,
-            as_attachment=True,
-            download_name=file_record.original_filename
+            as_attachment=not is_preview,
+            download_name=file_record.original_filename,
+            mimetype=content_type
         )
         
         # 清理临时文件
-        def remove_file(response):
-            try:
-                os.remove(temp_path)
-            except:
-                pass
-            return response
-        
         response.call_on_close(lambda: os.remove(temp_path) if os.path.exists(temp_path) else None)
         
         return response
@@ -173,7 +205,18 @@ def delete_file(user, file_id):
         
         # 检查权限
         if file_record.owner_id != user.id:
-            return jsonify({'error': '无权删除此文件'}), 403
+            # 如果不是文件所有者，检查是否是同一个用户组的成员
+            if file_record.group_id:
+                from models import GroupMember
+                membership = GroupMember.query.filter_by(
+                    user_id=user.id,
+                    group_id=file_record.group_id
+                ).first()
+                
+                if not membership:
+                    return jsonify({'error': '无权删除此文件'}), 403
+            else:
+                return jsonify({'error': '无权删除此文件'}), 403
         
         # 删除文件
         if os.path.exists(file_record.file_path):
