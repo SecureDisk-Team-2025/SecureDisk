@@ -52,8 +52,15 @@ export const fileService = {
 
   // 上传文件
   async uploadFile(file: File, groupId?: number) {
-    if (!keyStorage.masterKey || !keyStorage.sessionKey) {
-        throw new Error("密钥未初始化，请重新登录");
+    if (!keyStorage.sessionKey) {
+        throw new Error("会话密钥未初始化，请重新登录");
+    }
+
+    if (!keyStorage.masterKey) {
+        if (localStorage.getItem('pending_master_key')) {
+            throw new Error("NEED_UNLOCK:文件加密密钥尚未解锁，请输入密码解锁以继续操作");
+        }
+        throw new Error("加密密钥缺失，请重新登录");
     }
 
     // 1. 生成文件密钥
@@ -115,8 +122,15 @@ export const fileService = {
 
   // 下载文件
   async downloadFile(fileId: number, filename: string) {
-    if (!keyStorage.masterKey || !keyStorage.sessionKey) {
-        throw new Error("密钥未初始化，请重新登录");
+    if (!keyStorage.sessionKey) {
+        throw new Error("会话密钥未初始化，请重新登录");
+    }
+
+    if (!keyStorage.masterKey) {
+        if (localStorage.getItem('pending_master_key')) {
+            throw new Error("NEED_UNLOCK:文件解密密钥尚未解锁，请输入密码解锁以继续下载");
+        }
+        throw new Error("加密密钥缺失，请重新登录");
     }
 
     const response = await api.get(`/files/download/${fileId}`, {
@@ -188,8 +202,15 @@ export const fileService = {
 
   // 预览文件
   async previewFile(fileId: number, filename: string) {
-    if (!keyStorage.masterKey || !keyStorage.sessionKey) {
-        throw new Error("密钥未初始化，请重新登录");
+    if (!keyStorage.sessionKey) {
+        throw new Error("会话密钥未初始化，请重新登录");
+    }
+
+    if (!keyStorage.masterKey) {
+        if (localStorage.getItem('pending_master_key')) {
+            throw new Error("NEED_UNLOCK:文件解密密钥尚未解锁，请输入密码解锁以继续预览");
+        }
+        throw new Error("加密密钥缺失，请重新登录");
     }
 
     const response = await api.get(`/files/download/${fileId}`, {

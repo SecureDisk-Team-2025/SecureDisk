@@ -5,6 +5,7 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy
 import os
+import json
 from dotenv import load_dotenv
 # 确保 utils/mailer.py 文件存在
 from utils.mailer import send_email, generate_code
@@ -153,13 +154,14 @@ def login_email_api():
         print(f"✅ 登录成功! Token: {token_core[:10]}...")
 
         return jsonify({
-            'status': 'success', 
-            'session_token': session_token, 
-            'encrypted_session_key': encrypted_session_key,
-            'encrypted_master_key': user.encrypted_master_key,
-            'user': user.to_dict(),
-            'msg': '登录成功'
-        })
+                    'status': 'success', 
+                    'session_token': session_token, 
+                    'encrypted_session_key': encrypted_session_key,
+                    'encrypted_master_key': user.encrypted_master_key,
+                    'recovery_package': json.loads(user.recovery_package) if user.recovery_package else None,
+                    'user': user.to_dict(),
+                    'msg': '登录成功'
+                })
 
     except Exception as e:
         print(f"❌ 系统异常: {e}")

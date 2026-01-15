@@ -71,14 +71,16 @@ def register():
         if User.query.filter_by(email=email).first():
             return jsonify({'error': '邮箱已被注册'}), 400
         
-        # 接收客户端生成的加密主密钥
+        # 接收客户端生成的加密主密钥和恢复包
         encrypted_master_key_data = data.get('encrypted_master_key')
+        recovery_package_data = data.get('recovery_package')
         public_key = data.get('public_key')
         
         if not encrypted_master_key_data:
              return jsonify({'error': '缺少加密主密钥'}), 400
              
         encrypted_master_key_json = json.dumps(encrypted_master_key_data)
+        recovery_package_json = json.dumps(recovery_package_data) if recovery_package_data else None
         
         # 创建用户
         user = User(
@@ -87,7 +89,7 @@ def register():
             password_hash=PasswordAuth.hash_password(password),
             public_key=public_key,
             encrypted_master_key=encrypted_master_key_json,
-            recovery_package=None
+            recovery_package=recovery_package_json
         )
         
         db.session.add(user)

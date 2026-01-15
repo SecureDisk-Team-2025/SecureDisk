@@ -13,6 +13,7 @@ import {
   Space,
   Tag,
   Popconfirm,
+  Checkbox,
 } from 'antd';
 import {
   FileOutlined,
@@ -57,6 +58,57 @@ const Dashboard: React.FC = () => {
   const [previewLoading, setPreviewLoading] = useState(false);
   const [searchKeyword, setSearchKeyword] = useState<string>('');
   const [searchInput, setSearchInput] = useState<string>('');
+  const [unlockModalVisible, setUnlockModalVisible] = useState(false);
+  const [unlockPassword, setUnlockPassword] = useState('');
+  const [unlockRecoveryCode, setUnlockRecoveryCode] = useState('');
+  const [unlockMethod, setUnlockMethod] = useState<'password' | 'recovery_code'>('password');
+  const [trustDevice, setTrustDevice] = useState(true);
+  const [pendingAction, setPendingAction] = useState<(() => Promise<any>) | null>(null);
+
+  // 统一错误处理
+  const handleFileError = (error: any, retryAction?: () => Promise<any>) => {
+    const errorMsg = error.message || '';
+    if (errorMsg.startsWith('NEED_UNLOCK:')) {
+      const displayMsg = errorMsg.split(':')[1];
+      message.warning(displayMsg);
+      setPendingAction(() => retryAction || null);
+      setUnlockModalVisible(true);
+    } else {
+      message.error(error.response?.data?.error || error.message || '操作失败');
+    }
+  };
+
+  // 解锁主密钥
+  const handleUnlock = async () => {
+    try {
+      const { authService } = await import('../services/authService');
+      
+      if (unlockMethod === 'password') {
+        if (!unlockPassword) {
+          message.error('请输入密码');
+          return;
+        }
+        await authService.unlockMasterKey(unlockPassword, trustDevice);
+      } else {
+        if (!unlockRecoveryCode) {
+          message.error('请输入恢复码');
+          return;
+        }
+        await authService.unlockWithRecoveryCode(unlockRecoveryCode, trustDevice);
+      }
+      
+      message.success('密钥解锁成功');
+      setUnlockModalVisible(false);
+      setUnlockPassword('');
+      setUnlockRecoveryCode('');
+      if (pendingAction) {
+        await pendingAction();
+        setPendingAction(null);
+      }
+    } catch (error: any) {
+      message.error(error.message || '解锁失败，请检查密码或恢复码');
+    }
+  };
 
   // 加载文件列表
   const loadFiles = async () => {
@@ -127,9 +179,14 @@ const Dashboard: React.FC = () => {
   };
 
   useEffect(() => {
-    loadFiles();
-    loadGroups();
-    loadPendingRequestsCount();
+    const init = async () => {
+        const { authService } = await import('../services/authService');
+        await authService.tryAutoUnlock();
+        loadFiles();
+        loadGroups();
+        loadPendingRequestsCount();
+    };
+    init();
   }, [selectedGroup]);
 
   // 每30秒自动更新未处理申请数量
@@ -142,14 +199,12 @@ const Dashboard: React.FC = () => {
   const handleUpload = async (file: File) => {
     try {
       console.log('开始上传文件:', file.name);
-      const result = await fileService.uploadFile(file, selectedGroup);
+      await fileService.uploadFile(file, selectedGroup);
       message.success('上传成功');
       loadFiles();
-      return false; // 阻止默认上传行为
+      return false;
     } catch (error: any) {
-      console.error('上传文件错误:', error);
-      const errorMsg = error.response?.data?.error || error.message || '上传失败';
-      message.error(errorMsg);
+      handleFileError(error, () => handleUpload(file));
       return false;
     }
   };
@@ -160,7 +215,7 @@ const Dashboard: React.FC = () => {
       await fileService.downloadFile(file.id, file.original_filename);
       message.success('下载成功');
     } catch (error: any) {
-      message.error(error.response?.data?.error || '下载失败');
+      handleFileError(error, () => handleDownload(file));
     }
   };
 
@@ -185,7 +240,7 @@ const Dashboard: React.FC = () => {
       setPreviewData(data);
       setPreviewModalVisible(true);
     } catch (error: any) {
-      message.error(error.response?.data?.error || '预览失败');
+      handleFileError(error, () => handlePreview(file));
     } finally {
       setPreviewLoading(false);
     }
@@ -672,6 +727,74 @@ const Dashboard: React.FC = () => {
           }}
         />
       </Modal>
+
+      {/* 解锁密钥模态框 */}
+    <Modal
+      title="解锁文件加密密钥"
+      open={unlockModalVisible}
+      onCancel={() => {
+        setUnlockModalVisible(false);
+        setUnlockPassword('');
+        setUnlockRecoveryCode('');
+        setPendingAction(null);
+      }}
+      onOk={handleUnlock}
+      okText="解锁"
+      cancelText="取消"
+    >
+      <div style={{ marginBottom: 16 }}>
+        由于您使用的是邮箱登录，为了保障您的文件安全，在进行上传或下载操作前，需要解锁您的文件加密主密钥。
+      </div>
+      
+      <div style={{ marginBottom: 16 }}>
+        <Space direction="vertical" style={{ width: '100%' }}>
+          <div style={{ marginBottom: 8 }}>选择解锁方式：</div>
+          <Button.Group style={{ width: '100%' }}>
+            <Button 
+              type={unlockMethod === 'password' ? 'primary' : 'default'} 
+              style={{ width: '50%' }}
+              onClick={() => setUnlockMethod('password')}
+            >
+              使用密码
+            </Button>
+            <Button 
+              type={unlockMethod === 'recovery_code' ? 'primary' : 'default'} 
+              style={{ width: '50%' }}
+              onClick={() => setUnlockMethod('recovery_code')}
+            >
+              使用恢复码
+            </Button>
+          </Button.Group>
+        </Space>
+      </div>
+
+      {unlockMethod === 'password' ? (
+        <Input.Password
+          placeholder="请输入注册时的密码"
+          value={unlockPassword}
+          onChange={(e) => setUnlockPassword(e.target.value)}
+          onPressEnter={handleUnlock}
+        />
+      ) : (
+        <Input
+          placeholder="请输入12位恢复码 (例如: A1B2C3D4E5F6)"
+          value={unlockRecoveryCode}
+          onChange={(e) => setUnlockRecoveryCode(e.target.value)}
+          onPressEnter={handleUnlock}
+        />
+      )}
+      <div style={{ marginTop: 16 }}>
+        <Checkbox 
+          checked={trustDevice} 
+          onChange={(e) => setTrustDevice(e.target.checked)}
+        >
+          信任此设备（下次通过邮箱登录时免密码解锁文件）
+        </Checkbox>
+      </div>
+      <div style={{ marginTop: 8, fontSize: '12px', color: '#888' }}>
+        提示：为了安全，主密钥解锁后仅保存在本设备。若在公共设备登录，请勿勾选此项。
+      </div>
+    </Modal>
 
       {/* 文件预览模态框 */}
       <Modal

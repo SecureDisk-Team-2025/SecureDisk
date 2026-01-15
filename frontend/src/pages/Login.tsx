@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useContext } from 'react';
-import { Card, Form, Input, Button, Tabs, message, Space, Row, Col } from 'antd';
+import { Card, Form, Input, Button, Tabs, message, Space, Row, Col, Modal, Typography } from 'antd';
 import { UserOutlined, LockOutlined, MailOutlined, SafetyCertificateOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import { AuthContext } from '../contexts/AuthContext';
@@ -112,16 +112,31 @@ const Login: React.FC = () => {
     setLoading(true);
     try {
       const result = await authService.register(values.username, values.email, values.password);
-      message.success(`注册成功！恢复码：${result.recovery_code}（请妥善保管）`);
       
-      // 注册成功后自动登录
-      const loginResult = await authService.loginWithPassword(values.username, values.password);
-      const token = loginResult.session_token || loginResult.token;
+      // 使用 Modal 显示恢复码，确保用户看到
+      Modal.success({
+        title: '注册成功！',
+        content: (
+          <div>
+            <p>请务必妥善保管您的<b>恢复码</b>：</p>
+            <Typography.Title level={4} style={{ textAlign: 'center', color: '#1890ff' }}>
+              {result.recovery_code}
+            </Typography.Title>
+            <p>当您通过邮箱登录且忘记密码时，需要使用此恢复码解锁您的加密文件。</p>
+          </div>
+        ),
+        onOk: async () => {
+          // 注册成功后自动登录
+          const loginResult = await authService.loginWithPassword(values.username, values.password);
+          const token = loginResult.session_token || loginResult.token;
+          
+          if (token) {
+            login(loginResult.user || { username: values.username }, token);
+            navigate('/');
+          }
+        }
+      });
       
-      if (token) {
-        login(loginResult.user || { username: values.username }, token);
-        navigate('/');
-      }
     } catch (error: any) {
       message.error(error.response?.data?.msg || error.response?.data?.error || '注册失败');
     } finally {
