@@ -314,15 +314,37 @@ const Dashboard: React.FC = () => {
   };
 
   // 批准申请
-  const handleApproveRequest = async (requestId: number) => {
+  const handleApproveRequest = async (request: any) => {
     try {
-      await groupService.approveJoinRequest(requestId);
-      message.success('批准成功');
+      setRequestsLoading(true);
+      // 1. 批准申请
+      await groupService.approveJoinRequest(request.id);
+      
+      // 2. 自动为新成员共享组密钥
+      try {
+        if (request.user && request.user.public_key) {
+          await groupService.shareGroupKey(request.group_id, request.user_id, request.user.public_key);
+          message.success('批准成功，并已自动共享组密钥');
+        } else {
+          message.warning('申请已批准，但无法获取新成员的公钥，请手动为其分配密钥');
+        }
+      } catch (keyError: any) {
+        console.error('共享组密钥失败:', keyError);
+        // 如果是主密钥未解锁导致的，handleFileError 会处理
+        if (keyError.message?.startsWith('NEED_UNLOCK:')) {
+            handleFileError(keyError, () => handleApproveRequest(request));
+            return;
+        }
+        message.warning('申请已批准，但自动共享组密钥失败，请稍后重试或手动共享');
+      }
+
       loadRequests();
       loadGroups();
       loadPendingRequestsCount();
     } catch (error: any) {
       message.error(error.response?.data?.error || '批准失败');
+    } finally {
+      setRequestsLoading(false);
     }
   };
 
@@ -700,7 +722,7 @@ const Dashboard: React.FC = () => {
                   <Button
                     type="primary"
                     size="small"
-                    onClick={() => handleApproveRequest(record.id)}
+                    onClick={() => handleApproveRequest(record)}
                   >
                     批准
                   </Button>

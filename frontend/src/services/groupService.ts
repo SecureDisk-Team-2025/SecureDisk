@@ -47,7 +47,7 @@ export const groupService = {
   // 创建用户组
   async createGroup(name: string, description?: string) {
     if (!keyStorage.masterKey) {
-        throw new Error("密钥未初始化，请重新登录");
+        throw new Error("NEED_UNLOCK:您的主密钥未解锁，无法执行加密/解密操作。如果您是通过邮箱登录的，请先解锁主密钥。");
     }
 
     // 1. 生成组密钥 (AES-GCM)
@@ -83,7 +83,7 @@ export const groupService = {
     }
 
     if (!keyStorage.masterKey) {
-        throw new Error("密钥未初始化，请重新登录");
+        throw new Error("NEED_UNLOCK:您的主密钥未解锁，无法执行组密钥加解密操作。如果您是通过邮箱登录的，请先解锁主密钥。");
     }
 
     const response = await api.get(`/groups/${groupId}/key`);

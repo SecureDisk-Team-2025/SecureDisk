@@ -263,7 +263,7 @@ const Login: React.FC = () => {
                 name="password"
                 rules={[
                   { required: true, message: '请输入密码' },
-                  { min: 6, message: '至少6个字符' },
+                  { min: 6, message: '至少8位，需包含大小写数字组合' },
                 ]}
               >
                 <Input.Password prefix={<LockOutlined />} placeholder="设置密码" />
