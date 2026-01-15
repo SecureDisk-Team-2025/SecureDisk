@@ -44,6 +44,10 @@ const Dashboard: React.FC = () => {
   const [requestsModalVisible, setRequestsModalVisible] = useState(false);
   const [requests, setRequests] = useState<any[]>([]);
   const [requestsLoading, setRequestsLoading] = useState(false);
+  const [allGroups, setAllGroups] = useState<any[]>([]);
+  const [allGroupsLoading, setAllGroupsLoading] = useState(false);
+  const [selectedGroupToJoin, setSelectedGroupToJoin] = useState<any>(null);
+  const [applyModalVisible, setApplyModalVisible] = useState(false);
   const [pendingRequestsCount, setPendingRequestsCount] = useState(0);
   const [form] = Form.useForm();
   const [joinForm] = Form.useForm();
@@ -105,6 +109,20 @@ const Dashboard: React.FC = () => {
         message.error(errorMsg);
       }
       setGroups([]);
+    }
+  };
+
+  // 加载所有可选组列表
+  const loadAllGroups = async () => {
+    setAllGroupsLoading(true);
+    try {
+      const groupList = await groupService.getAllGroups();
+      setAllGroups(groupList || []);
+    } catch (error: any) {
+      console.error('加载所有组列表错误:', error);
+      message.error(error.response?.data?.error || '加载组列表失败');
+    } finally {
+      setAllGroupsLoading(false);
     }
   };
 
@@ -200,12 +218,12 @@ const Dashboard: React.FC = () => {
   // 加入用户组
   const handleJoinGroup = async (values: any) => {
     try {
-      const groupId = parseInt(values.groupId);
-      const result = await groupService.joinGroup(groupId, values.message);
+      const result = await groupService.joinGroup(selectedGroupToJoin.id, values.message);
       message.success(result.message || '申请已提交');
+      setApplyModalVisible(false);
       setJoinGroupModalVisible(false);
       joinForm.resetFields();
-      loadGroups();
+      loadAllGroups(); // 重新加载列表以更新状态
     } catch (error: any) {
       message.error(error.response?.data?.error || '加入失败');
     }
@@ -369,10 +387,13 @@ const Dashboard: React.FC = () => {
               >
                 创建用户组
               </Menu.Item>
-              <Menu.Item
+            <Menu.Item
                 key="join-group"
                 icon={<UserAddOutlined />}
-                onClick={() => setJoinGroupModalVisible(true)}
+                onClick={() => {
+                  loadAllGroups();
+                  setJoinGroupModalVisible(true);
+                }}
               >
                 加入用户组
               </Menu.Item>
@@ -499,9 +520,71 @@ const Dashboard: React.FC = () => {
         open={joinGroupModalVisible}
         onCancel={() => {
           setJoinGroupModalVisible(false);
-          joinForm.resetFields();
         }}
         footer={null}
+        width={700}
+      >
+        <Table
+          dataSource={allGroups}
+          loading={allGroupsLoading}
+          rowKey="id"
+          pagination={{ pageSize: 5 }}
+          columns={[
+            {
+              title: '组名',
+              dataIndex: 'name',
+              key: 'name',
+            },
+            {
+              title: '创建者',
+              dataIndex: 'creator_name',
+              key: 'creator_name',
+            },
+            {
+              title: '描述',
+              dataIndex: 'description',
+              key: 'description',
+              ellipsis: true,
+            },
+            {
+              title: '操作',
+              key: 'action',
+              render: (_: any, record: any) => {
+                if (record.is_joined) {
+                  return <Tag color="green">已加入</Tag>;
+                }
+                if (record.has_pending_request) {
+                  return <Tag color="orange">申请中</Tag>;
+                }
+                return (
+                  <Button
+                    type="primary"
+                    size="small"
+                    onClick={() => {
+                      setSelectedGroupToJoin(record);
+                      setApplyModalVisible(true);
+                    }}
+                  >
+                    申请加入
+                  </Button>
+                );
+              },
+            },
+          ]}
+        />
+      </Modal>
+
+      {/* 填写申请理由模态框 */}
+      <Modal
+        title={`申请加入: ${selectedGroupToJoin?.name}`}
+        open={applyModalVisible}
+        onCancel={() => {
+          setApplyModalVisible(false);
+          joinForm.resetFields();
+        }}
+        onOk={() => joinForm.submit()}
+        okText="发送申请"
+        cancelText="取消"
       >
         <Form
           form={joinForm}
@@ -509,36 +592,13 @@ const Dashboard: React.FC = () => {
           layout="vertical"
         >
           <Form.Item
-            name="groupId"
-            label="用户组 ID"
-            rules={[
-              { required: true, message: '请输入用户组 ID' },
-              { pattern: /^\d+$/, message: '用户组 ID 必须是数字' }
-            ]}
-          >
-            <Input placeholder="请输入用户组 ID" />
-          </Form.Item>
-          <Form.Item
             name="message"
-            label="申请信息"
+            label="申请理由"
             rules={[
               { max: 500, message: '申请信息不能超过500个字符' }
             ]}
           >
-            <TextArea rows={3} placeholder="请输入申请加入的理由（可选）" />
-          </Form.Item>
-          <Form.Item>
-            <Space>
-              <Button type="primary" htmlType="submit">
-                加入
-              </Button>
-              <Button onClick={() => {
-                setJoinGroupModalVisible(false);
-                joinForm.resetFields();
-              }}>
-                取消
-              </Button>
-            </Space>
+            <TextArea rows={4} placeholder="请输入申请加入的理由（可选）" />
           </Form.Item>
         </Form>
       </Modal>

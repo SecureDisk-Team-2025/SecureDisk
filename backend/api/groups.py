@@ -11,7 +11,7 @@ groups_bp = Blueprint('groups', __name__)
 @groups_bp.route('/list', methods=['GET'])
 @require_auth
 def list_groups(user):
-    """获取用户组列表"""
+    """获取用户所属的组列表"""
     try:
         # 获取用户所属的所有组
         memberships = GroupMember.query.filter_by(user_id=user.id).all()
@@ -33,6 +33,48 @@ def list_groups(user):
         import traceback
         print(f"获取用户组列表错误: {str(e)}")
         print(traceback.format_exc())
+        return jsonify({'error': str(e)}), 500
+
+@groups_bp.route('/all', methods=['GET'])
+@require_auth
+def list_all_groups(user):
+    """获取所有可选的用户组列表（排除已加入的）"""
+    try:
+        # 获取用户已经加入的组ID
+        memberships = GroupMember.query.filter_by(user_id=user.id).all()
+        joined_group_ids = [m.group_id for m in memberships]
+        
+        # 获取所有组，并关联创建者信息
+        all_groups = UserGroup.query.all()
+        
+        result = []
+        for g in all_groups:
+            # 标记用户是否已加入
+            is_joined = g.id in joined_group_ids
+            
+            # 获取创建者名称
+            creator = User.query.get(g.created_by)
+            creator_name = creator.username if creator else "未知用户"
+            
+            g_dict = g.to_dict()
+            g_dict['creator_name'] = creator_name
+            g_dict['is_joined'] = is_joined
+            
+            # 检查是否有待处理的申请
+            pending_request = GroupJoinRequest.query.filter_by(
+                user_id=user.id,
+                group_id=g.id,
+                status='pending'
+            ).first()
+            g_dict['has_pending_request'] = pending_request is not None
+            
+            result.append(g_dict)
+            
+        return jsonify({
+            'groups': result
+        }), 200
+    
+    except Exception as e:
         return jsonify({'error': str(e)}), 500
 
 @groups_bp.route('/create', methods=['POST'])

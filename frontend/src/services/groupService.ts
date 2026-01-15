@@ -36,6 +36,12 @@ export const groupService = {
     return response.data.groups;
   },
 
+  // 获取所有组列表（包含创建者信息和已加入状态）
+  async getAllGroups() {
+    const response = await api.get('/groups/all');
+    return response.data.groups;
+  },
+
   // 创建用户组
   async createGroup(name: string, description?: string) {
     const response = await api.post('/groups/create', {
