@@ -37,7 +37,7 @@ export const RSAEncryption = {
     };
   },
 
-  async encrypt(data: string, publicKeyPEM: string): Promise<string> {
+  async encrypt(data: string | BufferSource, publicKeyPEM: string): Promise<string> {
     try {
       // 解析PEM格式的公钥
       const publicKeyBuffer = parsePEM(publicKeyPEM);
@@ -53,7 +53,7 @@ export const RSAEncryption = {
       );
 
       // 加密数据
-      const dataBuffer = new TextEncoder().encode(data);
+      const dataBuffer = typeof data === 'string' ? new TextEncoder().encode(data) : data;
       const encryptedBuffer = await crypto.subtle.encrypt(
         {
           name: 'RSA-OAEP',
@@ -65,13 +65,27 @@ export const RSAEncryption = {
       return arrayBufferToBase64(encryptedBuffer);
     } catch (error) {
       console.error('RSA加密失败:', error);
-      // 降级处理：返回base64编码
-      return btoa(data);
+      // 降级处理
+      return typeof data === 'string' ? btoa(data) : arrayBufferToBase64(data);
     }
   },
 
   async decrypt(encryptedData: string, privateKeyPEM: string): Promise<string> {
     try {
+      const decryptedBuffer = await this.decryptBinary(encryptedData, privateKeyPEM);
+      return new TextDecoder().decode(decryptedBuffer);
+    } catch (error) {
+      console.error('RSA解密失败:', error);
+      // 降级处理
+      try {
+        return atob(encryptedData);
+      } catch (e) {
+        return encryptedData;
+      }
+    }
+  },
+
+  async decryptBinary(encryptedData: string, privateKeyPEM: string): Promise<ArrayBuffer> {
       // 解析PEM格式的私钥
       const privateKeyBuffer = parsePEM(privateKeyPEM);
       const privateKey = await crypto.subtle.importKey(
@@ -87,20 +101,13 @@ export const RSAEncryption = {
 
       // 解密数据
       const encryptedBuffer = base64ToArrayBuffer(encryptedData);
-      const decryptedBuffer = await crypto.subtle.decrypt(
+      return await crypto.subtle.decrypt(
         {
           name: 'RSA-OAEP',
         },
         privateKey,
         encryptedBuffer
       );
-
-      return new TextDecoder().decode(decryptedBuffer);
-    } catch (error) {
-      console.error('RSA解密失败:', error);
-      // 降级处理
-      return atob(encryptedData);
-    }
   },
 };
 
@@ -117,34 +124,94 @@ export const AESEncryption = {
     );
   },
 
-  async encrypt(data: ArrayBuffer, key: CryptoKey): Promise<{ ciphertext: ArrayBuffer; iv: Uint8Array }> {
+  async encrypt(data: any, key: CryptoKey): Promise<{ ciphertext: ArrayBuffer; iv: Uint8Array }> {
     const iv = crypto.getRandomValues(new Uint8Array(12));
     const ciphertext = await crypto.subtle.encrypt(
       {
         name: 'AES-GCM',
-        iv: iv.buffer as ArrayBuffer,
+        iv: iv,
       },
       key,
       data
     );
-    return { ciphertext, iv };
+    return { ciphertext: ciphertext as ArrayBuffer, iv };
   },
 
-  async decrypt(encryptedData: { ciphertext: ArrayBuffer; iv: Uint8Array }, key: CryptoKey): Promise<ArrayBuffer> {
-    return await crypto.subtle.decrypt(
+  async decrypt(encryptedData: { ciphertext: any; iv: any }, key: CryptoKey): Promise<ArrayBuffer> {
+    const decrypted = await crypto.subtle.decrypt(
       {
         name: 'AES-GCM',
-        iv: encryptedData.iv.buffer as ArrayBuffer,
+        iv: encryptedData.iv,
       },
       key,
       encryptedData.ciphertext
     );
+    return decrypted as ArrayBuffer;
+  },
+
+  async exportKey(key: CryptoKey): Promise<ArrayBuffer> {
+    return await crypto.subtle.exportKey('raw', key);
+  },
+
+  async importKey(keyData: ArrayBuffer): Promise<CryptoKey> {
+    return await crypto.subtle.importKey(
+      'raw',
+      keyData,
+      { name: 'AES-GCM' },
+      true,
+      ['encrypt', 'decrypt']
+    );
   },
 };
 
+export const KeyManager = {
+    async generateSessionKey(): Promise<CryptoKey> {
+        return await AESEncryption.generateKey();
+    },
+    
+    async deriveKey(password: string, salt: string): Promise<CryptoKey> {
+        const enc = new TextEncoder();
+        const keyMaterial = await crypto.subtle.importKey(
+          "raw",
+          enc.encode(password),
+          { name: "PBKDF2" },
+          false,
+          ["deriveKey"]
+        );
+        return await crypto.subtle.deriveKey(
+          {
+            name: "PBKDF2",
+            salt: enc.encode(salt),
+            iterations: 100000,
+            hash: "SHA-256",
+          },
+          keyMaterial,
+          { name: "AES-GCM", length: 256 },
+          true,
+          ["encrypt", "decrypt", "wrapKey", "unwrapKey"]
+        );
+    }
+};
+
 // 工具函数
-function arrayBufferToBase64(buffer: ArrayBuffer): string {
-  const bytes = new Uint8Array(buffer);
+/**
+ * 将 ArrayBuffer 或 TypedArray 转换为 Base64 字符串
+ * 使用 any 类型以绕过 TypeScript 对 SharedArrayBuffer 的严格检查
+ */
+export function arrayBufferToBase64(buffer: any): string {
+  let bytes: Uint8Array;
+  if (buffer instanceof Uint8Array) {
+    bytes = buffer;
+  } else if (buffer instanceof ArrayBuffer) {
+    bytes = new Uint8Array(buffer);
+  } else if (buffer && buffer.buffer && (buffer.buffer instanceof ArrayBuffer || buffer.buffer instanceof SharedArrayBuffer)) {
+    // 处理其他 TypedArray 或 DataView
+    bytes = new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+  } else {
+    // 最后的尝试：如果是类似数组的对象
+    bytes = new Uint8Array(buffer);
+  }
+  
   let binary = '';
   for (let i = 0; i < bytes.byteLength; i++) {
     binary += String.fromCharCode(bytes[i]);
@@ -152,7 +219,7 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
   return btoa(binary);
 }
 
-function base64ToArrayBuffer(base64: string): ArrayBuffer {
+export function base64ToArrayBuffer(base64: string): ArrayBuffer {
   const binary = atob(base64);
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) {

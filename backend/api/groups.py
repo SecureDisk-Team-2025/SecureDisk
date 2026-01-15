@@ -5,6 +5,7 @@ from flask import Blueprint, request, jsonify
 from models import UserGroup, GroupMember, GroupSharedKey, GroupJoinRequest, User, db
 from api.auth import require_auth
 from datetime import datetime
+import json
 
 groups_bp = Blueprint('groups', __name__)
 
@@ -85,9 +86,13 @@ def create_group(user):
         data = request.get_json()
         name = data.get('name')
         description = data.get('description', '')
+        encrypted_group_key = data.get('encrypted_group_key') # 创作者加密后的组密钥
         
         if not name:
             return jsonify({'error': '组名不能为空'}), 400
+        
+        if not encrypted_group_key:
+            return jsonify({'error': '缺少初始组密钥'}), 400
         
         # 创建用户组
         group = UserGroup(
@@ -105,8 +110,17 @@ def create_group(user):
             group_id=group.id,
             role='owner'
         )
-        
         db.session.add(member)
+
+        # 保存创建者的组密钥
+        shared_key = GroupSharedKey(
+            group_id=group.id,
+            user_id=user.id,
+            encrypted_key=json.dumps(encrypted_group_key) if isinstance(encrypted_group_key, dict) else encrypted_group_key,
+            shared_by=user.id
+        )
+        db.session.add(shared_key)
+        
         db.session.commit()
         
         return jsonify({
@@ -293,38 +307,79 @@ def reject_join_request(user, request_id):
 @groups_bp.route('/share-key', methods=['POST'])
 @require_auth
 def share_key(user):
-    """在用户组内共享密钥"""
+    """在用户组内共享密钥（通常由组管理员为新成员加密后上传）"""
     try:
         data = request.get_json()
         group_id = data.get('group_id')
-        encrypted_key = data.get('encrypted_key')  # 使用接收用户公钥加密的密钥
+        user_id = data.get('user_id')  # 接收者的用户ID
+        encrypted_key = data.get('encrypted_key')  # 使用接收用户RSA公钥加密的组密钥
         
-        if not group_id or not encrypted_key:
+        if not all([group_id, user_id, encrypted_key]):
             return jsonify({'error': '缺少必要参数'}), 400
         
-        # 检查用户是否在组内
-        membership = GroupMember.query.filter_by(
+        # 检查操作者是否在组内且具有管理员权限
+        operator_membership = GroupMember.query.filter_by(
             user_id=user.id,
             group_id=group_id
         ).first()
         
-        if not membership:
-            return jsonify({'error': '不是该组成员'}), 403
+        if not operator_membership or operator_membership.role not in ['owner', 'admin']:
+            return jsonify({'error': '没有权限共享密钥'}), 403
         
-        # 创建共享密钥记录
-        shared_key = GroupSharedKey(
+        # 检查接收者是否在组内
+        receiver_membership = GroupMember.query.filter_by(
+            user_id=user_id,
+            group_id=group_id
+        ).first()
+        
+        if not receiver_membership:
+            return jsonify({'error': '接收者不是该组成员'}), 400
+        
+        # 检查是否已经存在该用户的密钥
+        existing_key = GroupSharedKey.query.filter_by(
             group_id=group_id,
-            encrypted_key=encrypted_key,
-            shared_by=user.id
-        )
+            user_id=user_id
+        ).first()
         
-        db.session.add(shared_key)
+        if existing_key:
+            existing_key.encrypted_key = json.dumps(encrypted_key) if isinstance(encrypted_key, dict) else encrypted_key
+            existing_key.shared_by = user.id
+            existing_key.shared_at = datetime.now()
+        else:
+            # 创建共享密钥记录
+            shared_key = GroupSharedKey(
+                group_id=group_id,
+                user_id=user_id,
+                encrypted_key=json.dumps(encrypted_key) if isinstance(encrypted_key, dict) else encrypted_key,
+                shared_by=user.id
+            )
+            db.session.add(shared_key)
+        
         db.session.commit()
         
         return jsonify({
-            'message': '密钥共享成功',
-            'shared_key_id': shared_key.id
+            'message': '密钥共享成功'
         }), 201
+    
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@groups_bp.route('/<int:group_id>/key', methods=['GET'])
+@require_auth
+def get_group_key(user, group_id):
+    """获取当前用户在特定组的加密组密钥"""
+    try:
+        shared_key = GroupSharedKey.query.filter_by(
+            group_id=group_id,
+            user_id=user.id
+        ).first()
+        
+        if not shared_key:
+            return jsonify({'error': '尚未为您分配组密钥，请联系管理员'}), 404
+        
+        return jsonify({
+            'encrypted_key': json.loads(shared_key.encrypted_key) if shared_key.encrypted_key.startswith('{') else shared_key.encrypted_key
+        }), 200
     
     except Exception as e:
         return jsonify({'error': str(e)}), 500

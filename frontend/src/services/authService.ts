@@ -1,9 +1,20 @@
 // src/services/authService.ts
 import axios from 'axios';
 // 假设你项目里有这个加密工具文件，如果没有会报错，需确认
-import { RSAEncryption } from '../utils/crypto'; 
+import { RSAEncryption, AESEncryption, KeyManager, arrayBufferToBase64, base64ToArrayBuffer } from '../utils/crypto'; 
 
 const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000/api';
+
+// In-memory key storage
+export const keyStorage: {
+    masterKey: CryptoKey | null;
+    sessionKey: CryptoKey | null;
+    groupKeys: Record<number, CryptoKey>;
+} = {
+    masterKey: null,
+    sessionKey: null,
+    groupKeys: {}
+};
 
 // 配置axios
 const api = axios.create({
@@ -60,14 +71,35 @@ export const authService = {
     return await clientKeyPairPromise;
   },
 
-  // 1. 注册 (保持不变)
+  // 1. 注册 (端到端加密：客户端生成并加密主密钥)
   async register(username: string, email: string, password: string) {
     const keyPair = await this.generateKeyPair();
+    
+    // 生成主密钥 (Client-Side)
+    const masterKey = await AESEncryption.generateKey();
+    // 生成Salt
+    const salt = window.crypto.getRandomValues(new Uint8Array(16));
+    const saltStr = arrayBufferToBase64(salt);
+    
+    // 派生KWK (Key Wrapping Key)
+    const kwk = await KeyManager.deriveKey(password, saltStr);
+    
+    // 加密主密钥
+    const masterKeyRaw = await AESEncryption.exportKey(masterKey);
+    const encryptedMasterKey = await AESEncryption.encrypt(masterKeyRaw, kwk);
+    
+    const encryptedMasterKeyData = {
+        encrypted: arrayBufferToBase64(encryptedMasterKey.ciphertext),
+        nonce: arrayBufferToBase64(encryptedMasterKey.iv),
+        salt: saltStr
+    };
+
     const response = await api.post('/auth/register', {
       username,
       email,
       password,
-      public_key: keyPair.publicKey, // 发送公钥给后端
+      public_key: keyPair.publicKey,
+      encrypted_master_key: encryptedMasterKeyData // 发送给后端存储
     });
     
     // 保存公钥和恢复码
@@ -90,21 +122,61 @@ export const authService = {
     return response.data;
   },
 
-  // 3. 登录（密码方式）(保持不变)
+  // 3. 登录（密码方式）
   async loginWithPassword(username: string, password: string) {
     const keyPair = await this.generateKeyPair();
     const response = await api.post('/auth/login', {
-      type: 'password', // 后端可能需要根据这个区分
+      type: 'password',
       username,
       password,
       public_key: keyPair.publicKey,
     });
     
-    if (response.data.status === 'success' || response.data.token) {
+    if (response.data.status === 'success' || response.data.token || response.data.session_token) {
         localStorage.setItem('client_private_key', keyPair.privateKey);
-        // 注意：后端返回的字段可能是 token 或 session_token，这里做个兼容
         const token = response.data.session_token || response.data.token;
         localStorage.setItem('session_token', token);
+        
+        // 1. 解密会话密钥
+        if (response.data.encrypted_session_key) {
+            try {
+                const sessionKeyRaw = await RSAEncryption.decryptBinary(
+                    response.data.encrypted_session_key, 
+                    keyPair.privateKey
+                );
+                keyStorage.sessionKey = await AESEncryption.importKey(sessionKeyRaw);
+                console.log("会话密钥解密成功");
+            } catch (e) {
+                console.error("Session Key Decrypt Error", e);
+            }
+        }
+        
+        // 2. 解密主密钥
+        if (response.data.encrypted_master_key) {
+            try {
+                const mkData = JSON.parse(response.data.encrypted_master_key);
+                // Derive KWK
+                const salt = mkData.salt; // Must be present now
+                const kwk = await KeyManager.deriveKey(password, salt);
+                
+                const encryptedMK = {
+                    ciphertext: base64ToArrayBuffer(mkData.encrypted),
+                    iv: new Uint8Array(base64ToArrayBuffer(mkData.nonce))
+                };
+                
+                const masterKeyRaw = await AESEncryption.decrypt(encryptedMK, kwk);
+                keyStorage.masterKey = await AESEncryption.importKey(masterKeyRaw);
+                console.log("主密钥解密成功");
+            } catch (e) {
+                console.error("主密钥解密失败", e);
+            }
+        }
+        
+        // Handle Session Key (Fixing logic)
+        // Backend returns encrypted_session_key.
+        // Frontend decrypts it.
+        // Since my crypto.ts RSA decrypt returns string, and key is binary...
+        // I will fix crypto.ts to have decryptAsArrayBuffer.
     }
     
     return response.data;
@@ -126,6 +198,23 @@ export const authService = {
         // 兼容后端返回的 token 字段名
         const token = response.data.session_token || response.data.token;
         localStorage.setItem('session_token', token);
+
+        // 1. 解密会话密钥 (用于后续请求的传输加密)
+        if (response.data.encrypted_session_key) {
+            try {
+                const sessionKeyRaw = await RSAEncryption.decryptBinary(
+                    response.data.encrypted_session_key, 
+                    keyPair.privateKey
+                );
+                keyStorage.sessionKey = await AESEncryption.importKey(sessionKeyRaw);
+                console.log("会话密钥解密成功 (邮箱登录)");
+            } catch (e) {
+                console.error("Session Key Decrypt Error (Email Login)", e);
+            }
+        }
+        
+        // 注意：邮箱登录没有密码，暂时无法解密 masterKey
+        // 如果需要解密，用户之后可能需要输入一次主密码或使用恢复包
     }
     
     return response.data;
@@ -164,5 +253,8 @@ export const authService = {
     }
     localStorage.removeItem('session_token');
     localStorage.removeItem('client_private_key');
+    // Clear keys from memory
+    keyStorage.masterKey = null;
+    keyStorage.sessionKey = null;
   },
 };
