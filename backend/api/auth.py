@@ -71,24 +71,23 @@ def register():
         if User.query.filter_by(email=email).first():
             return jsonify({'error': '邮箱已被注册'}), 400
         
-        # 生成主密钥和RSA密钥对
-        master_key = KeyManager.generate_master_key()
-        private_key, public_key = RSAEncryption.generate_key_pair()
+        # 接收客户端生成的加密主密钥和恢复包
+        encrypted_master_key_data = data.get('encrypted_master_key')
+        recovery_package_data = data.get('recovery_package')
+        public_key = data.get('public_key')
         
-        # 加密主密钥
-        encrypted_master_key_data = KeyManager.encrypt_master_key(master_key, password)
+        if not encrypted_master_key_data:
+             return jsonify({'error': '缺少加密主密钥'}), 400
+             
         encrypted_master_key_json = json.dumps(encrypted_master_key_data)
-        
-        # 创建恢复包（使用临时恢复码，实际应该通过邮箱发送）
-        recovery_code = EmailAuth.generate_code(8)
-        recovery_package = KeyManager.create_recovery_package(master_key, recovery_code)
-        recovery_package_json = json.dumps(recovery_package)
+        recovery_package_json = json.dumps(recovery_package_data) if recovery_package_data else None
         
         # 创建用户
         user = User(
             username=username,
             email=email,
             password_hash=PasswordAuth.hash_password(password),
+            public_key=public_key,
             encrypted_master_key=encrypted_master_key_json,
             recovery_package=recovery_package_json
         )
@@ -96,12 +95,10 @@ def register():
         db.session.add(user)
         db.session.commit()
         
-        # 返回公钥和恢复码（实际应用中恢复码应该通过邮件发送）
+        # 返回成功
         return jsonify({
             'message': '注册成功',
-            'user_id': user.id,
-            'public_key': public_key,
-            'recovery_code': recovery_code  # 仅用于演示，实际应通过邮件发送
+            'user_id': user.id
         }), 201
     
     except Exception as e:
@@ -170,7 +167,11 @@ def login():
         
         # 生成会话密钥（一次一密）
         session_key = KeyManager.generate_session_key()
-        session_token = PasswordAuth.generate_token(32)
+        # 将会话密钥嵌入到Token中，以便服务器在后续请求中能获取到该密钥进行传输解密
+        # 注意：这不会破坏安全性，因为Token本身就是敏感的，拥有Token等同于拥有会话权限
+        # 且数据本身还有一层端到端的加密（服务器无法解密）
+        token_core = PasswordAuth.generate_token(32)
+        session_token = f"{token_core}.{session_key.hex()}"
         
         # 获取客户端公钥（用于加密会话密钥）
         client_public_key = data.get('public_key')
@@ -195,6 +196,8 @@ def login():
         return jsonify({
             'message': '登录成功',
             'session_token': session_token,
+            'encrypted_session_key': encrypted_session_key, # 返回加密的会话密钥
+            'encrypted_master_key': user.encrypted_master_key, # 返回加密的主密钥
             'user': user.to_dict()
         }), 200
     

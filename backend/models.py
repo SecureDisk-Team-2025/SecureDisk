@@ -16,6 +16,7 @@ class User(db.Model):
     username = db.Column(db.String(80), unique=True, nullable=False, index=True)
     email = db.Column(db.String(120), unique=True, nullable=False, index=True)
     password_hash = db.Column(db.String(255), nullable=False)
+    public_key = db.Column(db.Text, nullable=True)  # 用户RSA公钥
     encrypted_master_key = db.Column(db.Text, nullable=False)  # 加密的主密钥
     recovery_package = db.Column(db.Text, nullable=True)  # 密钥恢复包
     created_at = db.Column(db.DateTime, default=datetime.now)
@@ -31,6 +32,7 @@ class User(db.Model):
             'id': self.id,
             'username': self.username,
             'email': self.email,
+            'public_key': self.public_key,
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'last_login': self.last_login.isoformat() if self.last_login else None
         }
@@ -108,6 +110,7 @@ class GroupSharedKey(db.Model):
     
     id = db.Column(db.Integer, primary_key=True)
     group_id = db.Column(db.Integer, db.ForeignKey('user_groups.id'), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)  # 密钥对应的用户
     encrypted_key = db.Column(db.Text, nullable=False)  # 使用接收用户的公钥加密的密钥
     shared_by = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
     shared_at = db.Column(db.DateTime, default=datetime.now)
@@ -116,6 +119,7 @@ class GroupSharedKey(db.Model):
         return {
             'id': self.id,
             'group_id': self.group_id,
+            'user_id': self.user_id,
             'shared_by': self.shared_by,
             'shared_at': self.shared_at.isoformat() if self.shared_at else None
         }

@@ -1,9 +1,20 @@
 // src/services/authService.ts
 import axios from 'axios';
 // 假设你项目里有这个加密工具文件，如果没有会报错，需确认
-import { RSAEncryption } from '../utils/crypto'; 
+import { RSAEncryption, AESEncryption, KeyManager, arrayBufferToBase64, base64ToArrayBuffer } from '../utils/crypto'; 
 
 const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000/api';
+
+// In-memory key storage
+export const keyStorage: {
+    masterKey: CryptoKey | null;
+    sessionKey: CryptoKey | null;
+    groupKeys: Record<number, CryptoKey>;
+} = {
+    masterKey: null,
+    sessionKey: null,
+    groupKeys: {}
+};
 
 // 配置axios
 const api = axios.create({
@@ -60,24 +71,57 @@ export const authService = {
     return await clientKeyPairPromise;
   },
 
-  // 1. 注册 (保持不变)
+  // 1. 注册 (端到端加密：客户端生成并加密主密钥)
   async register(username: string, email: string, password: string) {
     const keyPair = await this.generateKeyPair();
+    
+    // 生成主密钥 (Client-Side)
+    const masterKey = await AESEncryption.generateKey();
+    const masterKeyRaw = await AESEncryption.exportKey(masterKey);
+
+    // 1. 使用密码加密主密钥
+    const salt = window.crypto.getRandomValues(new Uint8Array(16));
+    const saltStr = arrayBufferToBase64(salt);
+    const kwk = await KeyManager.deriveKey(password, saltStr);
+    const encryptedMasterKey = await AESEncryption.encrypt(masterKeyRaw, kwk);
+    
+    const encryptedMasterKeyData = {
+        encrypted: arrayBufferToBase64(encryptedMasterKey.ciphertext),
+        nonce: arrayBufferToBase64(encryptedMasterKey.iv),
+        salt: saltStr
+    };
+
+    // 2. 使用恢复码加密主密钥 (作为备份)
+    // 生成 12 位随机恢复码
+    const recoveryCode = Array.from(window.crypto.getRandomValues(new Uint8Array(6)))
+        .map(b => b.toString(16).padStart(2, '0')).join('').toUpperCase();
+    
+    const recoverySalt = window.crypto.getRandomValues(new Uint8Array(16));
+    const recoverySaltStr = arrayBufferToBase64(recoverySalt);
+    const recoveryKwk = await KeyManager.deriveKey(recoveryCode, recoverySaltStr);
+    const encryptedRecoveryKey = await AESEncryption.encrypt(masterKeyRaw, recoveryKwk);
+
+    const recoveryPackageData = {
+        encrypted: arrayBufferToBase64(encryptedRecoveryKey.ciphertext),
+        nonce: arrayBufferToBase64(encryptedRecoveryKey.iv),
+        salt: recoverySaltStr
+    };
+
     const response = await api.post('/auth/register', {
       username,
       email,
       password,
-      public_key: keyPair.publicKey, // 发送公钥给后端
+      public_key: keyPair.publicKey,
+      encrypted_master_key: encryptedMasterKeyData,
+      recovery_package: recoveryPackageData
     });
     
     // 保存公钥和恢复码
     localStorage.setItem('client_private_key', keyPair.privateKey);
     localStorage.setItem('client_public_key', keyPair.publicKey);
-    if (response.data.recovery_code) {
-      localStorage.setItem('recovery_code', response.data.recovery_code);
-    }
+    localStorage.setItem('recovery_code', recoveryCode);
     
-    return response.data;
+    return { ...response.data, recovery_code: recoveryCode };
   },
 
   // 2. 发送邮箱验证码 (⚠️ 修改了 URL 以匹配 app.py)
@@ -90,21 +134,59 @@ export const authService = {
     return response.data;
   },
 
-  // 3. 登录（密码方式）(保持不变)
-  async loginWithPassword(username: string, password: string) {
+  // 3. 登录（密码方式）
+  async loginWithPassword(username: string, password: string, trustDevice: boolean = true) {
     const keyPair = await this.generateKeyPair();
     const response = await api.post('/auth/login', {
-      type: 'password', // 后端可能需要根据这个区分
+      type: 'password',
       username,
       password,
       public_key: keyPair.publicKey,
     });
     
-    if (response.data.status === 'success' || response.data.token) {
+    if (response.data.status === 'success' || response.data.token || response.data.session_token) {
         localStorage.setItem('client_private_key', keyPair.privateKey);
-        // 注意：后端返回的字段可能是 token 或 session_token，这里做个兼容
         const token = response.data.session_token || response.data.token;
         localStorage.setItem('session_token', token);
+        
+        // 1. 解密会话密钥
+        if (response.data.encrypted_session_key) {
+            try {
+                const sessionKeyRaw = await RSAEncryption.decryptBinary(
+                    response.data.encrypted_session_key, 
+                    keyPair.privateKey
+                );
+                keyStorage.sessionKey = await AESEncryption.importKey(sessionKeyRaw);
+                console.log("会话密钥解密成功");
+            } catch (e) {
+                console.error("Session Key Decrypt Error", e);
+            }
+        }
+        
+        // 2. 解密主密钥
+        if (response.data.encrypted_master_key) {
+            try {
+                const mkData = JSON.parse(response.data.encrypted_master_key);
+                const salt = mkData.salt;
+                const kwk = await KeyManager.deriveKey(password, salt);
+                
+                const encryptedMK = {
+                    ciphertext: base64ToArrayBuffer(mkData.encrypted),
+                    iv: new Uint8Array(base64ToArrayBuffer(mkData.nonce))
+                };
+                
+                const masterKeyRaw = await AESEncryption.decrypt(encryptedMK, kwk);
+                keyStorage.masterKey = await AESEncryption.importKey(masterKeyRaw);
+                console.log("主密钥解密成功");
+
+                // 如果选择了信任设备，直接保存
+                if (trustDevice) {
+                    await this.saveDeviceTrust(masterKeyRaw);
+                }
+            } catch (e) {
+                console.error("主密钥解密失败", e);
+            }
+        }
     }
     
     return response.data;
@@ -126,9 +208,173 @@ export const authService = {
         // 兼容后端返回的 token 字段名
         const token = response.data.session_token || response.data.token;
         localStorage.setItem('session_token', token);
+
+        // 1. 解密会话密钥 (用于后续请求的传输加密)
+        if (response.data.encrypted_session_key) {
+            try {
+                const sessionKeyRaw = await RSAEncryption.decryptBinary(
+                    response.data.encrypted_session_key, 
+                    keyPair.privateKey
+                );
+                keyStorage.sessionKey = await AESEncryption.importKey(sessionKeyRaw);
+                console.log("会话密钥解密成功 (邮箱登录)");
+            } catch (e) {
+                console.error("Session Key Decrypt Error (Email Login)", e);
+            }
+        }
+        
+        // 保存加密的主密钥，待用户后续输入密码时解密
+        if (response.data.encrypted_master_key) {
+            localStorage.setItem('pending_master_key', response.data.encrypted_master_key);
+            console.log("已暂存加密的主密钥，等待解锁");
+        }
+
+        // 保存恢复包
+        if (response.data.recovery_package) {
+            localStorage.setItem('pending_recovery_package', JSON.stringify(response.data.recovery_package));
+        }
     }
     
     return response.data;
+  },
+
+  /**
+   * 使用密码解锁主密钥（用于邮箱登录后的场景）
+   */
+  async unlockMasterKey(password: string, trustDevice: boolean = false) {
+    const encryptedMasterKeyStr = localStorage.getItem('pending_master_key');
+    if (!encryptedMasterKeyStr) {
+        throw new Error("没有待解锁的主密钥");
+    }
+
+    try {
+        const mkData = JSON.parse(encryptedMasterKeyStr);
+        const salt = mkData.salt;
+        const kwk = await KeyManager.deriveKey(password, salt);
+        
+        const encryptedMK = {
+            ciphertext: base64ToArrayBuffer(mkData.encrypted),
+            iv: new Uint8Array(base64ToArrayBuffer(mkData.nonce))
+        };
+        
+        const masterKeyRaw = await AESEncryption.decrypt(encryptedMK, kwk);
+        keyStorage.masterKey = await AESEncryption.importKey(masterKeyRaw);
+        console.log("主密钥解锁成功");
+        
+        // 如果勾选了信任设备，将主密钥加密存储在本地
+        if (trustDevice) {
+            await this.saveDeviceTrust(masterKeyRaw);
+        }
+        
+        // 解锁成功后清除暂存
+        localStorage.removeItem('pending_master_key');
+        return true;
+    } catch (e) {
+        console.error("主密钥解锁失败:", e);
+        throw new Error("密码错误，无法解锁文件加密密钥");
+    }
+  },
+
+  /**
+   * 使用恢复码解锁主密钥
+   */
+  async unlockWithRecoveryCode(recoveryCode: string, trustDevice: boolean = false) {
+    const packageStr = localStorage.getItem('pending_recovery_package');
+    if (!packageStr) {
+        throw new Error("没有可用的恢复包");
+    }
+
+    try {
+        const mkData = JSON.parse(packageStr);
+        const salt = mkData.salt;
+        const kwk = await KeyManager.deriveKey(recoveryCode.toUpperCase(), salt);
+        
+        const encryptedMK = {
+            ciphertext: base64ToArrayBuffer(mkData.encrypted),
+            iv: new Uint8Array(base64ToArrayBuffer(mkData.nonce))
+        };
+        
+        const masterKeyRaw = await AESEncryption.decrypt(encryptedMK, kwk);
+        keyStorage.masterKey = await AESEncryption.importKey(masterKeyRaw);
+        console.log("主密钥通过恢复码解锁成功");
+        
+        // 如果勾选了信任设备，将主密钥加密存储在本地
+        if (trustDevice) {
+            await this.saveDeviceTrust(masterKeyRaw);
+        }
+        
+        localStorage.removeItem('pending_master_key');
+        localStorage.removeItem('pending_recovery_package');
+        return true;
+    } catch (e) {
+        console.error("恢复码解锁失败:", e);
+        throw new Error("恢复码错误，无法解锁文件加密密钥");
+    }
+  },
+
+  /**
+   * 建立设备信任：将主密钥加密保存在本地
+   */
+  async saveDeviceTrust(masterKeyRaw: ArrayBuffer) {
+    try {
+        // 生成一个设备专用的随机密钥
+        const deviceSecret = Array.from(window.crypto.getRandomValues(new Uint8Array(32)))
+            .map(b => b.toString(16).padStart(2, '0')).join('');
+        
+        const salt = window.crypto.getRandomValues(new Uint8Array(16));
+        const saltStr = arrayBufferToBase64(salt);
+        const kwk = await KeyManager.deriveKey(deviceSecret, saltStr);
+        
+        const encrypted = await AESEncryption.encrypt(masterKeyRaw, kwk);
+        
+        const trustData = {
+            encrypted: arrayBufferToBase64(encrypted.ciphertext),
+            nonce: arrayBufferToBase64(encrypted.iv),
+            salt: saltStr,
+            device_secret: deviceSecret // 存储在本地，作为本设备的“钥匙”
+        };
+        
+        localStorage.setItem('device_trust_data', JSON.stringify(trustData));
+        console.log("设备信任已建立");
+    } catch (e) {
+        console.error("建立设备信任失败:", e);
+    }
+  },
+
+  /**
+   * 尝试自动解锁（通过设备信任）
+   */
+  async tryAutoUnlock() {
+    if (keyStorage.masterKey) return true;
+    
+    const trustDataStr = localStorage.getItem('device_trust_data');
+    if (!trustDataStr) {
+        // 如果没有设备信任数据，但有暂存的主密钥，这通常是邮箱登录后的状态
+        return false;
+    }
+
+    try {
+        const trustData = JSON.parse(trustDataStr);
+        const kwk = await KeyManager.deriveKey(trustData.device_secret, trustData.salt);
+        
+        const encryptedMK = {
+            ciphertext: base64ToArrayBuffer(trustData.encrypted),
+            iv: new Uint8Array(base64ToArrayBuffer(trustData.nonce))
+        };
+        
+        const masterKeyRaw = await AESEncryption.decrypt(encryptedMK, kwk);
+        keyStorage.masterKey = await AESEncryption.importKey(masterKeyRaw);
+        console.log("设备自动解锁成功");
+        
+        // 自动解锁成功后，确保清除任何挂起的解锁请求
+        localStorage.removeItem('pending_master_key');
+        localStorage.removeItem('pending_recovery_package');
+        return true;
+    } catch (e) {
+        console.error("设备自动解锁失败:", e);
+        // 如果解锁失败，可能是数据损坏，但不建议直接删除，让用户手动解锁后再更新
+        return false;
+    }
   },
 
   // 5. 密钥找回 (保持不变)
@@ -164,5 +410,10 @@ export const authService = {
     }
     localStorage.removeItem('session_token');
     localStorage.removeItem('client_private_key');
+    localStorage.removeItem('pending_master_key');
+    // Clear keys from memory
+    keyStorage.masterKey = null;
+    keyStorage.sessionKey = null;
+    keyStorage.groupKeys = {};
   },
 };

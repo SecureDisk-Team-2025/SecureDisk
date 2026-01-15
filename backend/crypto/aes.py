@@ -63,6 +63,28 @@ class AESEncryption:
         }
     
     @staticmethod
+    def encrypt_raw(data: bytes, key: bytes) -> bytes:
+        """
+        加密数据（返回原始字节：IV + Ciphertext）
+        """
+        aesgcm = AESGCM(key)
+        nonce = os.urandom(12)
+        ciphertext = aesgcm.encrypt(nonce, data, None)
+        return nonce + ciphertext
+
+    @staticmethod
+    def decrypt_raw(data: bytes, key: bytes) -> bytes:
+        """
+        解密数据（输入原始字节：IV + Ciphertext）
+        """
+        if len(data) < 12:
+            raise ValueError("数据太短")
+        nonce = data[:12]
+        ciphertext = data[12:]
+        aesgcm = AESGCM(key)
+        return aesgcm.decrypt(nonce, ciphertext, None)
+
+    @staticmethod
     def decrypt(encrypted_data: dict, key: bytes) -> bytes:
         """
         解密数据

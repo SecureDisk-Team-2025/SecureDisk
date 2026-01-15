@@ -5,13 +5,14 @@ from flask import Blueprint, request, jsonify
 from models import UserGroup, GroupMember, GroupSharedKey, GroupJoinRequest, User, db
 from api.auth import require_auth
 from datetime import datetime
+import json
 
 groups_bp = Blueprint('groups', __name__)
 
 @groups_bp.route('/list', methods=['GET'])
 @require_auth
 def list_groups(user):
-    """获取用户组列表"""
+    """获取用户所属的组列表"""
     try:
         # 获取用户所属的所有组
         memberships = GroupMember.query.filter_by(user_id=user.id).all()
@@ -35,6 +36,48 @@ def list_groups(user):
         print(traceback.format_exc())
         return jsonify({'error': str(e)}), 500
 
+@groups_bp.route('/all', methods=['GET'])
+@require_auth
+def list_all_groups(user):
+    """获取所有可选的用户组列表（排除已加入的）"""
+    try:
+        # 获取用户已经加入的组ID
+        memberships = GroupMember.query.filter_by(user_id=user.id).all()
+        joined_group_ids = [m.group_id for m in memberships]
+        
+        # 获取所有组，并关联创建者信息
+        all_groups = UserGroup.query.all()
+        
+        result = []
+        for g in all_groups:
+            # 标记用户是否已加入
+            is_joined = g.id in joined_group_ids
+            
+            # 获取创建者名称
+            creator = User.query.get(g.created_by)
+            creator_name = creator.username if creator else "未知用户"
+            
+            g_dict = g.to_dict()
+            g_dict['creator_name'] = creator_name
+            g_dict['is_joined'] = is_joined
+            
+            # 检查是否有待处理的申请
+            pending_request = GroupJoinRequest.query.filter_by(
+                user_id=user.id,
+                group_id=g.id,
+                status='pending'
+            ).first()
+            g_dict['has_pending_request'] = pending_request is not None
+            
+            result.append(g_dict)
+            
+        return jsonify({
+            'groups': result
+        }), 200
+    
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 @groups_bp.route('/create', methods=['POST'])
 @require_auth
 def create_group(user):
@@ -43,9 +86,13 @@ def create_group(user):
         data = request.get_json()
         name = data.get('name')
         description = data.get('description', '')
+        encrypted_group_key = data.get('encrypted_group_key') # 创作者加密后的组密钥
         
         if not name:
             return jsonify({'error': '组名不能为空'}), 400
+        
+        if not encrypted_group_key:
+            return jsonify({'error': '缺少初始组密钥'}), 400
         
         # 创建用户组
         group = UserGroup(
@@ -63,8 +110,17 @@ def create_group(user):
             group_id=group.id,
             role='owner'
         )
-        
         db.session.add(member)
+
+        # 保存创建者的组密钥
+        shared_key = GroupSharedKey(
+            group_id=group.id,
+            user_id=user.id,
+            encrypted_key=json.dumps(encrypted_group_key) if isinstance(encrypted_group_key, dict) else encrypted_group_key,
+            shared_by=user.id
+        )
+        db.session.add(shared_key)
+        
         db.session.commit()
         
         return jsonify({
@@ -251,38 +307,79 @@ def reject_join_request(user, request_id):
 @groups_bp.route('/share-key', methods=['POST'])
 @require_auth
 def share_key(user):
-    """在用户组内共享密钥"""
+    """在用户组内共享密钥（通常由组管理员为新成员加密后上传）"""
     try:
         data = request.get_json()
         group_id = data.get('group_id')
-        encrypted_key = data.get('encrypted_key')  # 使用接收用户公钥加密的密钥
+        user_id = data.get('user_id')  # 接收者的用户ID
+        encrypted_key = data.get('encrypted_key')  # 使用接收用户RSA公钥加密的组密钥
         
-        if not group_id or not encrypted_key:
+        if not all([group_id, user_id, encrypted_key]):
             return jsonify({'error': '缺少必要参数'}), 400
         
-        # 检查用户是否在组内
-        membership = GroupMember.query.filter_by(
+        # 检查操作者是否在组内且具有管理员权限
+        operator_membership = GroupMember.query.filter_by(
             user_id=user.id,
             group_id=group_id
         ).first()
         
-        if not membership:
-            return jsonify({'error': '不是该组成员'}), 403
+        if not operator_membership or operator_membership.role not in ['owner', 'admin']:
+            return jsonify({'error': '没有权限共享密钥'}), 403
         
-        # 创建共享密钥记录
-        shared_key = GroupSharedKey(
+        # 检查接收者是否在组内
+        receiver_membership = GroupMember.query.filter_by(
+            user_id=user_id,
+            group_id=group_id
+        ).first()
+        
+        if not receiver_membership:
+            return jsonify({'error': '接收者不是该组成员'}), 400
+        
+        # 检查是否已经存在该用户的密钥
+        existing_key = GroupSharedKey.query.filter_by(
             group_id=group_id,
-            encrypted_key=encrypted_key,
-            shared_by=user.id
-        )
+            user_id=user_id
+        ).first()
         
-        db.session.add(shared_key)
+        if existing_key:
+            existing_key.encrypted_key = json.dumps(encrypted_key) if isinstance(encrypted_key, dict) else encrypted_key
+            existing_key.shared_by = user.id
+            existing_key.shared_at = datetime.now()
+        else:
+            # 创建共享密钥记录
+            shared_key = GroupSharedKey(
+                group_id=group_id,
+                user_id=user_id,
+                encrypted_key=json.dumps(encrypted_key) if isinstance(encrypted_key, dict) else encrypted_key,
+                shared_by=user.id
+            )
+            db.session.add(shared_key)
+        
         db.session.commit()
         
         return jsonify({
-            'message': '密钥共享成功',
-            'shared_key_id': shared_key.id
+            'message': '密钥共享成功'
         }), 201
+    
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@groups_bp.route('/<int:group_id>/key', methods=['GET'])
+@require_auth
+def get_group_key(user, group_id):
+    """获取当前用户在特定组的加密组密钥"""
+    try:
+        shared_key = GroupSharedKey.query.filter_by(
+            group_id=group_id,
+            user_id=user.id
+        ).first()
+        
+        if not shared_key:
+            return jsonify({'error': '尚未为您分配组密钥，请联系管理员'}), 404
+        
+        return jsonify({
+            'encrypted_key': json.loads(shared_key.encrypted_key) if shared_key.encrypted_key.startswith('{') else shared_key.encrypted_key
+        }), 200
     
     except Exception as e:
         return jsonify({'error': str(e)}), 500

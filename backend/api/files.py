@@ -84,9 +84,18 @@ def upload_file(user):
         
         if not file or file.filename == '':
             return jsonify({'error': '文件名为空'}), 400
+            
+        # 获取传输层会话密钥
+        token = request.headers.get('X-Session-Token')
+        session_key = None
+        if token and '.' in token:
+            try:
+                session_key = bytes.fromhex(token.split('.')[1])
+            except:
+                pass
         
-        # 生成文件密钥
-        file_key = KeyManager.generate_file_key()
+        if not session_key:
+            return jsonify({'error': '会话密钥丢失'}), 400
         
         # 直接在 uploads 目录下生成加密文件名
         from flask import current_app
@@ -96,19 +105,25 @@ def upload_file(user):
         encrypted_path = os.path.join(upload_folder, filename_on_disk)
         os.makedirs(upload_folder, exist_ok=True)
         
-        # 直接加密上传的文件流，避免在服务器磁盘留下未加密的临时文件
-        file_data = file.read()
-        AESEncryption.encrypt_data_to_file(file_data, file_key, encrypted_path)
+        # 读取上传的文件流（这是传输层加密的数据 Layer 2）
+        layer2_data = file.read()
         
-        # 获取主密钥（需要客户端提供密码解密）
-        # 这里简化处理，实际应该从客户端获取解密后的主密钥
-        # 或者使用会话密钥加密文件密钥传输
+        # 解密传输层，得到文件层加密数据 (Layer 1)
+        try:
+            layer1_data = AESEncryption.decrypt_raw(layer2_data, session_key)
+        except Exception as e:
+            return jsonify({'error': f'传输层解密失败: {str(e)}'}), 400
+            
+        # 将Layer 1数据（仍被File Key加密）写入磁盘
+        # 服务器无法解密这一层，满足"服务器不能解开用户加密数据"的要求
+        with open(encrypted_path, 'wb') as f:
+            f.write(layer1_data)
         
-        # 加密文件密钥（使用主密钥，这里需要客户端提供）
-        # 实际应用中，文件密钥应该使用主密钥加密后存储
-        encrypted_file_key_json = json.dumps({
-            'encrypted': base64.b64encode(file_key).decode('utf-8')  # 简化处理
-        })
+        # 获取客户端上传的加密文件密钥
+        encrypted_file_key_json = request.form.get('encrypted_file_key')
+        if not encrypted_file_key_json:
+            # 兼容旧逻辑（可选，或者直接报错）
+            return jsonify({'error': '缺少加密文件密钥'}), 400
         
         # 创建文件记录
         file_record = File(
@@ -127,8 +142,7 @@ def upload_file(user):
         
         return jsonify({
             'message': '上传成功',
-            'file': file_record.to_dict(),
-            'file_key': base64.b64encode(file_key).decode('utf-8')  # 返回给客户端
+            'file': file_record.to_dict()
         }), 201
     
     except Exception as e:
@@ -159,29 +173,49 @@ def download_file(user, file_id):
             else:
                 return jsonify({'error': '无权访问此文件'}), 403
         
-        # 获取文件密钥（需要客户端提供主密钥解密）
-        encrypted_file_key_data = json.loads(file_record.encrypted_file_key)
-        file_key = base64.b64decode(encrypted_file_key_data['encrypted'])
+        # 获取传输层会话密钥
+        token = request.headers.get('X-Session-Token')
+        session_key = None
+        if token and '.' in token:
+            try:
+                session_key = bytes.fromhex(token.split('.')[1])
+            except:
+                pass
         
-        # 解密文件到内存，避免在服务器磁盘留下未加密的临时文件
-        plaintext = AESEncryption.decrypt_file_to_memory(file_record.file_path, file_key)
+        if not session_key:
+            return jsonify({'error': '会话密钥丢失'}), 400
+
+        # 读取加密文件内容 (Layer 1: 端到端加密数据)
+        # 服务器直接读取磁盘上的密文，不进行解密
+        if not os.path.exists(file_record.file_path):
+            return jsonify({'error': '文件不存在'}), 404
+            
+        with open(file_record.file_path, 'rb') as f:
+            layer1_data = f.read()
+
+        # 传输层加密 (Layer 2: 会话密钥加密)
+        # 使用会话密钥对Layer 1数据进行再次加密，防止传输过程被窃听
+        try:
+            layer2_data = AESEncryption.encrypt_raw(layer1_data, session_key)
+        except Exception as e:
+            return jsonify({'error': f'传输层加密失败: {str(e)}'}), 500
+
+        # 返回双重加密的数据流
+        # 客户端收到后需进行两层解密：
+        # 1. 解密传输层 (Session Key) -> 得到 Layer 1
+        # 2. 解密文件层 (File Key) -> 得到 Plaintext
+        from flask import make_response
+        response = make_response(layer2_data)
+        response.headers['Content-Type'] = 'application/octet-stream'
         
-        # 检查是否是预览请求
-        is_preview = request.args.get('preview', 'false').lower() == 'true'
-        
-        # 根据文件类型设置Content-Type
-        import mimetypes
-        content_type, _ = mimetypes.guess_type(file_record.original_filename)
-        if not content_type:
-            content_type = 'application/octet-stream'
-        
-        # 使用 BytesIO 将内存中的明文发送给客户端
-        return send_file(
-            io.BytesIO(plaintext),
-            as_attachment=not is_preview,
-            download_name=file_record.original_filename,
-            mimetype=content_type
-        )
+        # 添加加密的文件密钥到响应头，以便客户端解密 Layer 1
+        if file_record.encrypted_file_key:
+             response.headers['X-Encrypted-File-Key'] = file_record.encrypted_file_key
+             if file_record.group_id:
+                 response.headers['X-File-Group-Id'] = str(file_record.group_id)
+             # 确保CORS允许此Header (已在app.py中配置)
+             
+        return response
     
     except Exception as e:
         return jsonify({'error': str(e)}), 500

@@ -13,6 +13,7 @@ import {
   Space,
   Tag,
   Popconfirm,
+  Checkbox,
 } from 'antd';
 import {
   FileOutlined,
@@ -44,6 +45,10 @@ const Dashboard: React.FC = () => {
   const [requestsModalVisible, setRequestsModalVisible] = useState(false);
   const [requests, setRequests] = useState<any[]>([]);
   const [requestsLoading, setRequestsLoading] = useState(false);
+  const [allGroups, setAllGroups] = useState<any[]>([]);
+  const [allGroupsLoading, setAllGroupsLoading] = useState(false);
+  const [selectedGroupToJoin, setSelectedGroupToJoin] = useState<any>(null);
+  const [applyModalVisible, setApplyModalVisible] = useState(false);
   const [pendingRequestsCount, setPendingRequestsCount] = useState(0);
   const [form] = Form.useForm();
   const [joinForm] = Form.useForm();
@@ -53,6 +58,57 @@ const Dashboard: React.FC = () => {
   const [previewLoading, setPreviewLoading] = useState(false);
   const [searchKeyword, setSearchKeyword] = useState<string>('');
   const [searchInput, setSearchInput] = useState<string>('');
+  const [unlockModalVisible, setUnlockModalVisible] = useState(false);
+  const [unlockPassword, setUnlockPassword] = useState('');
+  const [unlockRecoveryCode, setUnlockRecoveryCode] = useState('');
+  const [unlockMethod, setUnlockMethod] = useState<'password' | 'recovery_code'>('password');
+  const [trustDevice, setTrustDevice] = useState(true);
+  const [pendingAction, setPendingAction] = useState<(() => Promise<any>) | null>(null);
+
+  // 统一错误处理
+  const handleFileError = (error: any, retryAction?: () => Promise<any>) => {
+    const errorMsg = error.message || '';
+    if (errorMsg.startsWith('NEED_UNLOCK:')) {
+      const displayMsg = errorMsg.split(':')[1];
+      message.warning(displayMsg);
+      setPendingAction(() => retryAction || null);
+      setUnlockModalVisible(true);
+    } else {
+      message.error(error.response?.data?.error || error.message || '操作失败');
+    }
+  };
+
+  // 解锁主密钥
+  const handleUnlock = async () => {
+    try {
+      const { authService } = await import('../services/authService');
+      
+      if (unlockMethod === 'password') {
+        if (!unlockPassword) {
+          message.error('请输入密码');
+          return;
+        }
+        await authService.unlockMasterKey(unlockPassword, trustDevice);
+      } else {
+        if (!unlockRecoveryCode) {
+          message.error('请输入恢复码');
+          return;
+        }
+        await authService.unlockWithRecoveryCode(unlockRecoveryCode, trustDevice);
+      }
+      
+      message.success('密钥解锁成功');
+      setUnlockModalVisible(false);
+      setUnlockPassword('');
+      setUnlockRecoveryCode('');
+      if (pendingAction) {
+        await pendingAction();
+        setPendingAction(null);
+      }
+    } catch (error: any) {
+      message.error(error.message || '解锁失败，请检查密码或恢复码');
+    }
+  };
 
   // 加载文件列表
   const loadFiles = async () => {
@@ -108,10 +164,29 @@ const Dashboard: React.FC = () => {
     }
   };
 
+  // 加载所有可选组列表
+  const loadAllGroups = async () => {
+    setAllGroupsLoading(true);
+    try {
+      const groupList = await groupService.getAllGroups();
+      setAllGroups(groupList || []);
+    } catch (error: any) {
+      console.error('加载所有组列表错误:', error);
+      message.error(error.response?.data?.error || '加载组列表失败');
+    } finally {
+      setAllGroupsLoading(false);
+    }
+  };
+
   useEffect(() => {
-    loadFiles();
-    loadGroups();
-    loadPendingRequestsCount();
+    const init = async () => {
+        const { authService } = await import('../services/authService');
+        await authService.tryAutoUnlock();
+        loadFiles();
+        loadGroups();
+        loadPendingRequestsCount();
+    };
+    init();
   }, [selectedGroup]);
 
   // 每30秒自动更新未处理申请数量
@@ -124,14 +199,12 @@ const Dashboard: React.FC = () => {
   const handleUpload = async (file: File) => {
     try {
       console.log('开始上传文件:', file.name);
-      const result = await fileService.uploadFile(file, selectedGroup);
+      await fileService.uploadFile(file, selectedGroup);
       message.success('上传成功');
       loadFiles();
-      return false; // 阻止默认上传行为
+      return false;
     } catch (error: any) {
-      console.error('上传文件错误:', error);
-      const errorMsg = error.response?.data?.error || error.message || '上传失败';
-      message.error(errorMsg);
+      handleFileError(error, () => handleUpload(file));
       return false;
     }
   };
@@ -142,7 +215,7 @@ const Dashboard: React.FC = () => {
       await fileService.downloadFile(file.id, file.original_filename);
       message.success('下载成功');
     } catch (error: any) {
-      message.error(error.response?.data?.error || '下载失败');
+      handleFileError(error, () => handleDownload(file));
     }
   };
 
@@ -167,7 +240,7 @@ const Dashboard: React.FC = () => {
       setPreviewData(data);
       setPreviewModalVisible(true);
     } catch (error: any) {
-      message.error(error.response?.data?.error || '预览失败');
+      handleFileError(error, () => handlePreview(file));
     } finally {
       setPreviewLoading(false);
     }
@@ -200,12 +273,12 @@ const Dashboard: React.FC = () => {
   // 加入用户组
   const handleJoinGroup = async (values: any) => {
     try {
-      const groupId = parseInt(values.groupId);
-      const result = await groupService.joinGroup(groupId, values.message);
+      const result = await groupService.joinGroup(selectedGroupToJoin.id, values.message);
       message.success(result.message || '申请已提交');
+      setApplyModalVisible(false);
       setJoinGroupModalVisible(false);
       joinForm.resetFields();
-      loadGroups();
+      loadAllGroups(); // 重新加载列表以更新状态
     } catch (error: any) {
       message.error(error.response?.data?.error || '加入失败');
     }
@@ -241,15 +314,37 @@ const Dashboard: React.FC = () => {
   };
 
   // 批准申请
-  const handleApproveRequest = async (requestId: number) => {
+  const handleApproveRequest = async (request: any) => {
     try {
-      await groupService.approveJoinRequest(requestId);
-      message.success('批准成功');
+      setRequestsLoading(true);
+      // 1. 批准申请
+      await groupService.approveJoinRequest(request.id);
+      
+      // 2. 自动为新成员共享组密钥
+      try {
+        if (request.user && request.user.public_key) {
+          await groupService.shareGroupKey(request.group_id, request.user_id, request.user.public_key);
+          message.success('批准成功，并已自动共享组密钥');
+        } else {
+          message.warning('申请已批准，但无法获取新成员的公钥，请手动为其分配密钥');
+        }
+      } catch (keyError: any) {
+        console.error('共享组密钥失败:', keyError);
+        // 如果是主密钥未解锁导致的，handleFileError 会处理
+        if (keyError.message?.startsWith('NEED_UNLOCK:')) {
+            handleFileError(keyError, () => handleApproveRequest(request));
+            return;
+        }
+        message.warning('申请已批准，但自动共享组密钥失败，请稍后重试或手动共享');
+      }
+
       loadRequests();
       loadGroups();
       loadPendingRequestsCount();
     } catch (error: any) {
       message.error(error.response?.data?.error || '批准失败');
+    } finally {
+      setRequestsLoading(false);
     }
   };
 
@@ -369,10 +464,13 @@ const Dashboard: React.FC = () => {
               >
                 创建用户组
               </Menu.Item>
-              <Menu.Item
+            <Menu.Item
                 key="join-group"
                 icon={<UserAddOutlined />}
-                onClick={() => setJoinGroupModalVisible(true)}
+                onClick={() => {
+                  loadAllGroups();
+                  setJoinGroupModalVisible(true);
+                }}
               >
                 加入用户组
               </Menu.Item>
@@ -499,9 +597,71 @@ const Dashboard: React.FC = () => {
         open={joinGroupModalVisible}
         onCancel={() => {
           setJoinGroupModalVisible(false);
-          joinForm.resetFields();
         }}
         footer={null}
+        width={700}
+      >
+        <Table
+          dataSource={allGroups}
+          loading={allGroupsLoading}
+          rowKey="id"
+          pagination={{ pageSize: 5 }}
+          columns={[
+            {
+              title: '组名',
+              dataIndex: 'name',
+              key: 'name',
+            },
+            {
+              title: '创建者',
+              dataIndex: 'creator_name',
+              key: 'creator_name',
+            },
+            {
+              title: '描述',
+              dataIndex: 'description',
+              key: 'description',
+              ellipsis: true,
+            },
+            {
+              title: '操作',
+              key: 'action',
+              render: (_: any, record: any) => {
+                if (record.is_joined) {
+                  return <Tag color="green">已加入</Tag>;
+                }
+                if (record.has_pending_request) {
+                  return <Tag color="orange">申请中</Tag>;
+                }
+                return (
+                  <Button
+                    type="primary"
+                    size="small"
+                    onClick={() => {
+                      setSelectedGroupToJoin(record);
+                      setApplyModalVisible(true);
+                    }}
+                  >
+                    申请加入
+                  </Button>
+                );
+              },
+            },
+          ]}
+        />
+      </Modal>
+
+      {/* 填写申请理由模态框 */}
+      <Modal
+        title={`申请加入: ${selectedGroupToJoin?.name}`}
+        open={applyModalVisible}
+        onCancel={() => {
+          setApplyModalVisible(false);
+          joinForm.resetFields();
+        }}
+        onOk={() => joinForm.submit()}
+        okText="发送申请"
+        cancelText="取消"
       >
         <Form
           form={joinForm}
@@ -509,36 +669,13 @@ const Dashboard: React.FC = () => {
           layout="vertical"
         >
           <Form.Item
-            name="groupId"
-            label="用户组 ID"
-            rules={[
-              { required: true, message: '请输入用户组 ID' },
-              { pattern: /^\d+$/, message: '用户组 ID 必须是数字' }
-            ]}
-          >
-            <Input placeholder="请输入用户组 ID" />
-          </Form.Item>
-          <Form.Item
             name="message"
-            label="申请信息"
+            label="申请理由"
             rules={[
               { max: 500, message: '申请信息不能超过500个字符' }
             ]}
           >
-            <TextArea rows={3} placeholder="请输入申请加入的理由（可选）" />
-          </Form.Item>
-          <Form.Item>
-            <Space>
-              <Button type="primary" htmlType="submit">
-                加入
-              </Button>
-              <Button onClick={() => {
-                setJoinGroupModalVisible(false);
-                joinForm.resetFields();
-              }}>
-                取消
-              </Button>
-            </Space>
+            <TextArea rows={4} placeholder="请输入申请加入的理由（可选）" />
           </Form.Item>
         </Form>
       </Modal>
@@ -585,7 +722,7 @@ const Dashboard: React.FC = () => {
                   <Button
                     type="primary"
                     size="small"
-                    onClick={() => handleApproveRequest(record.id)}
+                    onClick={() => handleApproveRequest(record)}
                   >
                     批准
                   </Button>
@@ -612,6 +749,74 @@ const Dashboard: React.FC = () => {
           }}
         />
       </Modal>
+
+      {/* 解锁密钥模态框 */}
+    <Modal
+      title="解锁文件加密密钥"
+      open={unlockModalVisible}
+      onCancel={() => {
+        setUnlockModalVisible(false);
+        setUnlockPassword('');
+        setUnlockRecoveryCode('');
+        setPendingAction(null);
+      }}
+      onOk={handleUnlock}
+      okText="解锁"
+      cancelText="取消"
+    >
+      <div style={{ marginBottom: 16 }}>
+        由于您使用的是邮箱登录，为了保障您的文件安全，在进行上传或下载操作前，需要解锁您的文件加密主密钥。
+      </div>
+      
+      <div style={{ marginBottom: 16 }}>
+        <Space direction="vertical" style={{ width: '100%' }}>
+          <div style={{ marginBottom: 8 }}>选择解锁方式：</div>
+          <Button.Group style={{ width: '100%' }}>
+            <Button 
+              type={unlockMethod === 'password' ? 'primary' : 'default'} 
+              style={{ width: '50%' }}
+              onClick={() => setUnlockMethod('password')}
+            >
+              使用密码
+            </Button>
+            <Button 
+              type={unlockMethod === 'recovery_code' ? 'primary' : 'default'} 
+              style={{ width: '50%' }}
+              onClick={() => setUnlockMethod('recovery_code')}
+            >
+              使用恢复码
+            </Button>
+          </Button.Group>
+        </Space>
+      </div>
+
+      {unlockMethod === 'password' ? (
+        <Input.Password
+          placeholder="请输入注册时的密码"
+          value={unlockPassword}
+          onChange={(e) => setUnlockPassword(e.target.value)}
+          onPressEnter={handleUnlock}
+        />
+      ) : (
+        <Input
+          placeholder="请输入12位恢复码 (例如: A1B2C3D4E5F6)"
+          value={unlockRecoveryCode}
+          onChange={(e) => setUnlockRecoveryCode(e.target.value)}
+          onPressEnter={handleUnlock}
+        />
+      )}
+      <div style={{ marginTop: 16 }}>
+        <Checkbox 
+          checked={trustDevice} 
+          onChange={(e) => setTrustDevice(e.target.checked)}
+        >
+          信任此设备（下次通过邮箱登录时免密码解锁文件）
+        </Checkbox>
+      </div>
+      <div style={{ marginTop: 8, fontSize: '12px', color: '#888' }}>
+        提示：为了安全，主密钥解锁后仅保存在本设备。若在公共设备登录，请勿勾选此项。
+      </div>
+    </Modal>
 
       {/* 文件预览模态框 */}
       <Modal
